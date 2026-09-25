@@ -1,0 +1,30 @@
+name: Actualizar datos
+
+on:
+  schedule:
+    - cron: "0 6 * * *"      # todos los días a las 06:00 UTC (08:00 en España en verano)
+    - cron: "0 14 * * 2"     # martes tarde: cuotas de la jornada entre semana
+    - cron: "0 18 * * 5"     # viernes tarde: cuotas del fin de semana
+  workflow_dispatch:         # botón "Run workflow" para lanzarlo a mano
+
+permissions:
+  contents: write
+
+jobs:
+  actualizar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - run: python generar_web.py
+      - name: Guardar data.json
+        run: |
+          git config user.name "robot-futbol"
+          git config user.email "robot-futbol@users.noreply.github.com"
+          git add data.json
+          git diff --cached --quiet || git commit -m "Datos actualizados $(date -u +%Y-%m-%d)"
+          git push
