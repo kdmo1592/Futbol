@@ -31,7 +31,8 @@ LIGAS = {
     "F1": "Ligue 1",
 }
 
-TEMPORADAS = ["2122", "2223", "2324", "2425", "2526", "2627"]
+# 1920 y 2021 solo "calientan" los ratings (y 2021 se jugó sin público).
+TEMPORADAS = ["1920", "2021", "2122", "2223", "2324", "2425", "2526", "2627"]
 TEMPORADAS_BACKTEST = ["2324", "2425", "2526", "2627"]     # las anteriores calientan el modelo
 
 URL_HISTORICO = "https://www.football-data.co.uk/mmz4281/{t}/{liga}.csv"
@@ -126,6 +127,8 @@ def normalizar_historico(raw):
     for col, nuevo in (("HS", "hs"), ("AS", "as_"), ("HST", "hst"), ("AST", "ast"), ("HC", "hc"), ("AC", "ac"),
                        ("HY", "hy"), ("AY", "ay"), ("HR", "hr"), ("AR", "ar"), ("HTHG", "htgl"), ("HTAG", "htgv")):
         df[nuevo] = pd.to_numeric(raw[col], errors="coerce") if col in raw.columns else np.nan
+    df["arbitro"] = (raw["Referee"].fillna("").astype(str).str.strip().replace({"nan": np.nan, "": np.nan})
+                     if "Referee" in raw.columns else np.nan)
     df = _anadir_cuotas(df, raw)
     df = df.dropna(subset=["fecha", "gl", "gv", "y"]).copy()
     df[["gl", "gv", "y"]] = df[["gl", "gv"]].astype(int).join(df["y"].astype(int))
@@ -195,6 +198,7 @@ def normalizar_fixtures(raw):
         "local_n": raw["HomeTeam"].astype(str).str.strip(),
         "visitante_n": raw["AwayTeam"].astype(str).str.strip(),
     })
+    df["arbitro"] = raw["Referee"].fillna("").astype(str).str.strip().replace("nan", "") if "Referee" in raw.columns else ""
     df = _anadir_cuotas(df, raw)
     df = df[df["liga"].isin(LIGAS)].dropna(subset=["fecha"]).copy()
     df["local"] = df["liga"] + ":" + df["local_n"]
@@ -274,12 +278,12 @@ def ajustar_fuerzas(d, corte, vida_media, k_prior, n_iter=N_ITER_MAX, tol=1e-6):
     return att, dfn, mu_l, mu_v, n_juegos
 
 
-def _lambdas(att, dfn, mu_l, mu_v, i, j):
-    return (np.clip(mu_l * att[i] * dfn[j], 0.05, 6.0),
-            np.clip(mu_v * att[j] * dfn[i], 0.05, 6.0))
+def _lambdas(att, dfn, mu_l, mu_v, i, j, tope=6.0):
+    return (np.clip(mu_l * att[i] * dfn[j], 0.05, tope),
+            np.clip(mu_v * att[j] * dfn[i], 0.05, tope))
 
 
-def lambdas_walkforward(d, idx_eval, vida_media, k_prior):
+def lambdas_walkforward(d, idx_eval, vida_media, k_prior, tope=6.0):
     """Cada partido usa solo partidos con fecha ANTERIOR. Se ajusta una vez por fecha."""
     lam_l = np.full(len(idx_eval), np.nan)
     lam_v = np.full(len(idx_eval), np.nan)
@@ -292,7 +296,7 @@ def lambdas_walkforward(d, idx_eval, vida_media, k_prior):
         att, dfn, mu_l, mu_v, n_juegos = ajuste
         i, j = d.il[idx_eval[sel]], d.iv[idx_eval[sel]]
         ok = (n_juegos[i] >= MIN_PARTIDOS_EQUIPO) & (n_juegos[j] >= MIN_PARTIDOS_EQUIPO)
-        ll, lv = _lambdas(att, dfn, mu_l, mu_v, i, j)
+        ll, lv = _lambdas(att, dfn, mu_l, mu_v, i, j, tope)
         lam_l[sel[ok]], lam_v[sel[ok]] = ll[ok], lv[ok]
     return lam_l, lam_v
 
