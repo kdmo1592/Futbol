@@ -177,6 +177,8 @@ class ModeloMercado:
         self._datos_mkt = {}
         self.modelos = {}
         self.metricas = None
+        self.variables = None
+        self.principal = None
         self.info = {}
 
     # ---- goles esperados implícitos del cierre de cada partido del histórico
@@ -247,24 +249,37 @@ class ModeloMercado:
                           np.log(np.clip(v[["desc_l", "desc_v"]].to_numpy(float), 1, None)), ligas])
 
     # ---- entrenamiento
-    def entrenar(self, progreso=None):
-        temporadas = self.temporadas[2:]                    # las dos primeras calientan los ratings
-        if len(temporadas) < MIN_TEMPORADAS_ENTRENO + 1:
-            raise ValueError("Hacen falta al menos 5 temporadas de histórico.")
+    FUENTES_PROPIAS = ("Modelo de mercado", "Rating de mercado", "Modelo de goles")
+
+    def entrenar(self, progreso=None, n_boot=2000, seed=42):
+        """
+        Reparto temporal (nunca se mezclan temporadas):
+          - las dos primeras temporadas solo calientan los ratings;
+          - entrenamiento: todas menos las tres últimas;
+          - validación (elige la regularización): antepenúltima;
+          - test (lo que se enseña en la app): las dos últimas.
+        Todas las fuentes se comparan sobre LOS MISMOS partidos del test.
+        Al final se reentrena con todo para usarlo en los próximos partidos.
+        """
+        temporadas = self.temporadas[2:]
+        if len(temporadas) < MIN_TEMPORADAS_ENTRENO + 3:
+            raise ValueError("Hacen falta al menos 7 temporadas de histórico.")
         if progreso:
-            progreso(f"Preparando variables de {len(temporadas)} temporadas (1-2 minutos)…")
+            progreso(f"Preparando variables de {len(temporadas)} temporadas…")
         v = self.construir_variables(temporadas, progreso)
-        test = temporadas[-1]
-        val = temporadas[-2]
-        entreno = temporadas[:-2]
+        self.variables = v
+        test = temporadas[-2:]
+        val = temporadas[-3]
+        entreno = temporadas[:-3]
         p1c, pouc = probs_mercado(v, cierre=True)
         p1a, poua = probs_mercado(v, cierre=False)
+        rng = np.random.default_rng(seed)
         metricas = []
         for tag, K, T_all, A_all in (("1x2", 3, p1c, p1a), ("ou", 2, pouc, poua)):
             X = self._X(v, tag)
             ok = np.isfinite(X).all(1) & np.isfinite(T_all).all(1)
             temp = v["temporada"].to_numpy()
-            tr, va, te = (ok & np.isin(temp, entreno)), (ok & (temp == val)), (ok & (temp == test))
+            tr, va, te = (ok & np.isin(temp, entreno)), (ok & (temp == val)), (ok & np.isin(temp, test))
             if tr.sum() < 500 or va.sum() < 100:
                 raise ValueError("Histórico insuficiente para entrenar el modelo de mercado.")
             mejor, mejor_l2 = np.inf, L2_GRID[-1]
@@ -274,26 +289,47 @@ class ModeloMercado:
                 if p < mejor:
                     mejor, mejor_l2 = p, l2
             modelo = Softmax().fit(X[tr | va], T_all[tr | va], mejor_l2)
-            self.modelos[tag] = modelo
-            # ¿cuánto nos acercamos al mercado en la temporada de test?
-            y = (v["y"] if tag == "1x2" else v["y_ou"]).to_numpy()[te].astype(int)
-            O = np.eye(K)[y]
-            fuentes = {"Mercado (cierre)": T_all[te], "Mercado (apertura)": A_all[te],
-                       "Modelo de mercado": modelo.predict(X[te]),
-                       "Rating de mercado": v[[f"rat_{tag}_{k}" for k in range(K)]].to_numpy(float)[te],
-                       "Modelo de goles": v[[f"gol_{tag}_{k}" for k in range(K)]].to_numpy(float)[te],
-                       "Uniforme": np.full((int(te.sum()), K), 1.0 / K)}
+            y_all = (v["y"] if tag == "1x2" else v["y_ou"]).to_numpy().astype(int)
+            fuentes = {"Mercado (cierre)": T_all, "Mercado (apertura)": A_all,
+                       "Modelo de mercado": np.where(ok[:, None], modelo.predict(np.nan_to_num(X)), np.nan),
+                       "Rating de mercado": v[[f"rat_{tag}_{k}" for k in range(K)]].to_numpy(float),
+                       "Modelo de goles": v[[f"gol_{tag}_{k}" for k in range(K)]].to_numpy(float),
+                       "Uniforme": np.full((len(v), K), 1.0 / K)}
+            # mismos partidos para todos; la apertura no existe en algunas ligas (p. ej. Suecia):
+            # si quitarla deja fuera muchos partidos, se compara aparte.
+            comun = te.copy()
+            for P in fuentes.values():
+                comun &= np.isfinite(P).all(1)
+            sin_apertura = te.copy()
+            for n, P in fuentes.items():
+                if n != "Mercado (apertura)":
+                    sin_apertura &= np.isfinite(P).all(1)
+            mercado = "1X2" if tag == "1x2" else "Más/Menos 2.5"
+            O = np.eye(K)[y_all]
             for nombre, P in fuentes.items():
-                m_ok = np.isfinite(P).all(1)
-                if m_ok.sum() == 0:
+                mascara = comun if nombre == "Mercado (apertura)" else sin_apertura
+                if mascara.sum() == 0:
                     continue
-                metricas.append({"mercado": "1X2" if tag == "1x2" else "Más/Menos 2.5", "fuente": nombre,
-                                 "n": int(m_ok.sum()), "log_loss": entropia(O[m_ok], P[m_ok]).mean(),
-                                 "brier": ((P[m_ok] - O[m_ok]) ** 2).sum(1).mean(),
-                                 "acierto": (P[m_ok].argmax(1) == y[m_ok]).mean(),
-                                 "l2": mejor_l2 if nombre == "Modelo de mercado" else np.nan})
+                ll = entropia(O[mascara], P[mascara])
+                fila = {"mercado": mercado, "fuente": nombre, "n": int(mascara.sum()),
+                        "log_loss": ll.mean(), "brier": ((P[mascara] - O[mascara]) ** 2).sum(1).mean(),
+                        "acierto": (P[mascara].argmax(1) == y_all[mascara]).mean(),
+                        "l2": mejor_l2 if nombre == "Modelo de mercado" else np.nan,
+                        "dif_cierre": np.nan, "ic_lo": np.nan, "ic_hi": np.nan}
+                if nombre != "Mercado (cierre)":
+                    # diferencia de log loss frente al cierre en los mismos partidos, con IC 95 % (bootstrap)
+                    ref = entropia(O[mascara], fuentes["Mercado (cierre)"][mascara])
+                    dif = ll - ref
+                    medias = dif[rng.integers(0, len(dif), (n_boot, len(dif)))].mean(1)
+                    fila["dif_cierre"] = dif.mean()
+                    fila["ic_lo"], fila["ic_hi"] = np.percentile(medias, [2.5, 97.5])
+                metricas.append(fila)
+            # modelo definitivo: con todo (incluido el test) para predecir los próximos partidos
+            self.modelos[tag] = Softmax().fit(X[ok], T_all[ok], mejor_l2)
         self.metricas = pd.DataFrame(metricas)
-        self.info = {"entreno": entreno, "validacion": val, "test": test,
+        m1 = self.metricas[(self.metricas["mercado"] == "1X2") & self.metricas["fuente"].isin(self.FUENTES_PROPIAS)]
+        self.principal = m1.sort_values("log_loss")["fuente"].iloc[0] if len(m1) else "Modelo de mercado"
+        self.info = {"entreno": entreno, "validacion": val, "test": test, "principal": self.principal,
                      "fecha_datos": str(self.hist["fecha"].max().date()), "partidos": int(len(self.hist))}
         return self.metricas
 
