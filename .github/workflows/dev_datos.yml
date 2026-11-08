@@ -1,0 +1,23 @@
+name: dev - descargar CSV
+on:
+  push:
+    branches: [dev-datos]
+permissions:
+  contents: write
+jobs:
+  bajar:
+    if: "!contains(github.event.head_commit.message, '[skip ci]')"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          mkdir -p csv
+          for l in SP1 SP2 E0 D1 I1 F1; do for t in 1819 1920 2021 2122 2223 2324 2425 2526 2627; do
+            curl -sfL -A "Mozilla/5.0" "https://www.football-data.co.uk/mmz4281/$t/$l.csv" -o "csv/${l}_${t}.csv" || echo "falla $l $t"
+          done; done
+          for c in SWE NOR DNK FIN; do curl -sfL -A "Mozilla/5.0" "https://www.football-data.co.uk/new/$c.csv" -o "csv/new_$c.csv" || echo "falla $c"; done
+          curl -sfL -A "Mozilla/5.0" https://www.football-data.co.uk/fixtures.csv -o csv/fixtures.csv
+          curl -sfL -A "Mozilla/5.0" https://www.football-data.co.uk/new_league_fixtures.csv -o csv/new_league_fixtures.csv
+          ls -la csv
+          git config user.name robot; git config user.email robot@users.noreply.github.com
+          git add csv && git commit -m "csv [skip ci]" && git push
