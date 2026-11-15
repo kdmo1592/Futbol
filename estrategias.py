@@ -416,3 +416,87 @@ def probar_variables(v, hist, temporadas_test, rho_mercado, n_boot=1000, seed=7)
                           "ic_lo": float(lo), "ic_hi": float(hi),
                           "veredicto": "ayuda" if hi < 0 else "empeora" if lo > 0 else "no se distingue"})
     return filas
+
+
+# ============================================================
+# 4. AJUSTE DE TARJETAS POR EL CONTEXTO DEL PARTIDO
+# ============================================================
+# Medido en las temporadas de prueba: un partido igualado tiene MÁS tarjetas que uno con
+# favorito claro, aunque los dos equipos tengan el mismo rating. El árbitro, en cambio, no
+# mejoró la predicción de forma medible (solo hay árbitro en la Premier).
+#
+#   tarjetas esperadas = rating x exp(b0 + b1*log(goles esperados) + b2*|diferencia de goles|)
+#
+# Los coeficientes se ajustan fuera de la prueba y se comprueban dentro. Si no mejoran,
+# el robot no los publica y la app sigue con el rating a secas.
+
+LINEAS_EVAL_TAR = [2.5, 3.5, 4.5, 5.5, 6.5]
+
+
+def _poisson_log(X, y, offset):
+    """Poisson con log-enlace y desplazamiento fijo: mu = offset * exp(X b)."""
+    from scipy.optimize import minimize
+    off = np.log(np.clip(offset, 1e-6, None))
+
+    def f(b):
+        eta = off + X @ b
+        mu = np.exp(np.clip(eta, -20, 20))
+        return float((mu - y * eta).sum() / len(y)), (X * (mu - y)[:, None]).sum(0) / len(y)
+
+    return minimize(f, np.zeros(X.shape[1]), jac=True, method="L-BFGS-B").x
+
+
+def _brier_lineas(y, mu, k, lineas):
+    out = np.zeros(len(y))
+    for linea in lineas:
+        p = np.clip(p_mas_de(mu, k, linea), 1e-4, 1 - 1e-4)
+        out += (p - (y > linea).astype(float)) ** 2
+    return out / len(lineas)
+
+
+def ajuste_tarjetas(v, hist, temporadas_test, n_boot=2000, seed=11):
+    """Devuelve los coeficientes si mejoran de verdad en la prueba; si no, None."""
+    tl, tv = columnas_conteo(hist, "tarjetas")
+    h = hist.assign(y_tar=(tl + tv))
+    clave = ["liga", "fecha", "local", "visitante"]
+    datos = v.merge(h[clave + ["y_tar"]], on=clave, how="inner")
+    # rating walk-forward de tarjetas
+    trozos = []
+    for liga in sorted(datos["liga"].unique()):
+        sub = hist[hist["liga"] == liga].reset_index(drop=True)
+        if sub["hy"].notna().sum() < 200:
+            continue
+        d = datos_conteo(sub, "tarjetas")
+        idx = np.where(sub["temporada"].isin(sorted(datos["temporada"].unique())))[0]
+        if len(idx) == 0:
+            continue
+        cfg = CONTEOS["tarjetas"]
+        a, b = mf.lambdas_walkforward(d, idx, cfg["vida_media"], cfg["k_prior"], tope=TOPE_CONTEO)
+        trozos.append(sub.iloc[idx][clave].assign(rat_tar=a + b))
+    if not trozos:
+        return None
+    datos = datos.merge(pd.concat(trozos, ignore_index=True), on=clave, how="inner")
+    y = datos["y_tar"].to_numpy(float)
+    base = datos["rat_tar"].to_numpy(float)
+    tot = (datos["ape_l"] + datos["ape_v"]).to_numpy(float)
+    dif = np.abs(datos["ape_l"] - datos["ape_v"]).to_numpy(float)
+    ok = np.isfinite(y) & np.isfinite(base) & np.isfinite(tot) & np.isfinite(dif) & (base > 0)
+    test = datos["temporada"].isin(temporadas_test).to_numpy()
+    dev, te = ok & ~test, ok & test
+    if dev.sum() < 1500 or te.sum() < 400:
+        return None
+    X = np.column_stack([np.ones(len(datos)), np.log(np.clip(tot, 0.1, None)), dif])
+    b = _poisson_log(X[dev], y[dev], base[dev])
+    mu = base * np.exp(np.clip(X @ b, -5, 5))
+    k0, k1 = k_momentos(y[dev], base[dev]), k_momentos(y[dev], mu[dev])
+    b0 = _brier_lineas(y[te], base[te], k0, LINEAS_EVAL_TAR)
+    b1 = _brier_lineas(y[te], mu[te], k1, LINEAS_EVAL_TAR)
+    dif_b = b1 - b0
+    rng = np.random.default_rng(seed)
+    boot = dif_b[rng.integers(0, len(dif_b), (n_boot, len(dif_b)))].mean(1)
+    lo, hi = np.percentile(boot, [2.5, 97.5])
+    res = {"coef": [float(x) for x in b], "k": round(float(k1), 2), "k_sin": round(float(k0), 2),
+           "n_test": int(te.sum()), "brier_sin": float(b0.mean()), "brier_con": float(b1.mean()),
+           "dif": float(dif_b.mean()), "ic_lo": float(lo), "ic_hi": float(hi), "usar": bool(hi < 0),
+           "ejemplos": [[d_, round(float(np.exp(b[0] + b[1] * np.log(2.7) + b[2] * d_)), 3)] for d_ in (0.2, 1.0, 2.0)]}
+    return res

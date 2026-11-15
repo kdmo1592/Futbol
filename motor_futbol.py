@@ -125,7 +125,8 @@ def normalizar_historico(raw):
         "y": raw["FTR"].map({"H": 0, "D": 1, "A": 2}),
     })
     for col, nuevo in (("HS", "hs"), ("AS", "as_"), ("HST", "hst"), ("AST", "ast"), ("HC", "hc"), ("AC", "ac"),
-                       ("HY", "hy"), ("AY", "ay"), ("HR", "hr"), ("AR", "ar"), ("HTHG", "htgl"), ("HTAG", "htgv")):
+                       ("HY", "hy"), ("AY", "ay"), ("HR", "hr"), ("AR", "ar"), ("HF", "hf"), ("AF", "af"),
+                       ("HTHG", "htgl"), ("HTAG", "htgv")):
         df[nuevo] = pd.to_numeric(raw[col], errors="coerce") if col in raw.columns else np.nan
     df["arbitro"] = (raw["Referee"].fillna("").astype(str).str.strip().replace({"nan": np.nan, "": np.nan})
                      if "Referee" in raw.columns else np.nan)

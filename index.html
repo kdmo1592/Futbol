@@ -169,14 +169,22 @@ var Motor = (function () {
     for (var x = 0; x <= n; x++) s += pm[x];
     return Math.max(0, 1 - s);
   }
-  function conteos(D, liga, i, j) {
+  function conteos(D, liga, i, j, base) {
     var F = D.fuerzas[liga], C = D.conteos || {}, out = {}, minp = D.parametros.min_partidos;
     [["corners", "cor"], ["tarjetas", "tar"]].forEach(function (t) {
       var fz = F[t[1]], c = C[t[0]];
       if (!fz || !c || fz.n[i] < minp || fz.n[j] < minp) return;
-      var lam = lambdas(fz, i, j, D.parametros.tope_conteo || 15), tot = lam[0] + lam[1];
-      out[t[0]] = { nombre: c.nombre, ml: lam[0], mv: lam[1], total: tot, k_total: c.k_total, k_lado: c.k_lado,
-        total_lineas: c.lineas_total.map(function (l) { return [l, pMas(tot, c.k_total, l)]; }),
+      var lam = lambdas(fz, i, j, D.parametros.tope_conteo || 15), tot = lam[0] + lam[1], k = c.k_total, ajuste = null;
+      /* tarjetas: un partido igualado tiene más tarjetas que uno con favorito claro (medido en ✅ Fiable) */
+      var aj = c.ajuste;
+      if (aj && aj.usar && base && base.mercado) {
+        var ltot = base.lam[0] + base.lam[1], ldif = Math.abs(base.lam[0] - base.lam[1]);
+        var f = Math.exp(clip(aj.coef[0] + aj.coef[1] * Math.log(Math.max(ltot, 0.1)) + aj.coef[2] * ldif, -1, 1));
+        ajuste = { factor: f, sin: tot };
+        lam = [lam[0] * f, lam[1] * f]; tot = tot * f; k = aj.k || k;
+      }
+      out[t[0]] = { nombre: c.nombre, ml: lam[0], mv: lam[1], total: tot, k_total: k, k_lado: c.k_lado, ajuste: ajuste,
+        total_lineas: c.lineas_total.map(function (l) { return [l, pMas(tot, k, l)]; }),
         local_lineas: c.lineas_equipo.map(function (l) { return [l, pMas(lam[0], c.k_lado, l)]; }),
         visit_lineas: c.lineas_equipo.map(function (l) { return [l, pMas(lam[1], c.k_lado, l)]; }) };
     });
@@ -314,7 +322,12 @@ var Motor = (function () {
     if (fx && fx.btts && fx.btts.p > 0 && fx.btts.n >= 2) { marca.pb = fx.btts.p; marca.mercado = fx.btts; marca.fuente = "cuotas de Ambos marcan"; }
     var a = { liga: liga, local: local, visitante: visitante, fecha: fecha, fuentes: fuentes, orden: orden,
       principal: principal, base: base, avisos: avisos, fixture: fx, M: M,
-      conteos: conteos(D, liga, i, j), marca: marca, i: i, j: j };
+      conteos: conteos(D, liga, i, j, base), marca: marca, i: i, j: j };
+    /* cuotas reales de córners del partido (cuando la casa las publica) */
+    if (fx && fx.btts && fx.btts.corners && a.conteos.corners) {
+      a.conteos.corners.mercado = fx.btts.corners;
+      a.conteos.corners.actualizado = fx.btts.actualizado;
+    }
     a.selecciones = selecciones(a);
     return a;
   }
@@ -351,6 +364,17 @@ var Motor = (function () {
     if (bt) { out[out.length - 2].casa = bt.mejor_si[0]; out[out.length - 1].casa = bt.mejor_no[0]; }
     [["corners", "COR", "Córners"], ["tarjetas", "TAR", "Tarjetas"]].forEach(function (t) {
       var c = a.conteos && a.conteos[t[0]]; if (!c) return;
+      if (c.mercado) {                       /* precio real: se usan las líneas que publica el mercado */
+        Object.keys(c.mercado).map(Number).sort(function (x, y) { return x - y; }).forEach(function (l) {
+          var m = c.mercado[String(l)];
+          if (!m || m.n < 2) return;
+          add(t[2], t[2], "Más de " + l, t[1], 1, l, m.p, m.mejor_mas && m.mejor_mas[1]);
+          add(t[2], t[2], "Menos de " + l, t[1], 0, l, 1 - m.p, m.mejor_menos && m.mejor_menos[1]);
+          out[out.length - 2].casa = m.mejor_mas && m.mejor_mas[0];
+          out[out.length - 1].casa = m.mejor_menos && m.mejor_menos[0];
+        });
+        return;
+      }
       /* las dos líneas más cercanas al 50 % */
       c.total_lineas.slice().sort(function (x, y) { return Math.abs(x[1] - 0.5) - Math.abs(y[1] - 0.5); }).slice(0, 2)
         .sort(function (x, y) { return x[0] - y[0]; }).forEach(function (l) {
@@ -669,7 +693,7 @@ if (typeof module !== "undefined") module.exports = Motor;
     var dif = r[1] - A.media_liga;
     return '<p>Árbitro <b>' + esc(nom) + '</b>: ' + num(r[1]) + ' tarjetas por partido en ' + r[0] + ' partidos (media de la liga ' + num(A.media_liga) +
       ', ' + signo(dif, 2) + ').' + (r[0] < 15 ? ' <span class="sub">Pocos partidos: tómalo con cautela.</span>' : '') +
-      ' <span class="sub">El modelo no lo incluye: ajústalo tú.</span></p>';
+      ' <span class="sub">Probado: meter al árbitro en el modelo no mejoró la predicción (✅ Fiable), así que es solo contexto.</span></p>';
   }
   function bloqueConteos(a) {
     var C = a.conteos || {}, h = "";
@@ -678,15 +702,26 @@ if (typeof module !== "undefined") module.exports = Motor;
       if (!c) return;
       h += '<div class="card"><h3>' + c.nombre + '</h3><p>Esperados: <b>' + num(c.ml, 1) + '</b> ' + esc(a.local) + ' · <b>' + num(c.mv, 1) +
         '</b> ' + esc(a.visitante) + ' · total <b>' + num(c.total, 1) + '</b></p>';
+      if (c.ajuste) h += '<p class="sub">Ajustado por el contexto: el rating a secas daba ' + num(c.ajuste.sin, 1) +
+        ', pero ' + (c.ajuste.factor > 1 ? 'es un partido igualado y eso sube las tarjetas' : 'hay un favorito claro y eso las baja') +
+        ' (×' + num(c.ajuste.factor) + ').</p>';
+      if (c.mercado) h += '<p class="sub">✅ Este partido tiene <b>cuotas reales de córners</b>: las probabilidades de abajo salen del mercado, no del modelo.</p>';
       if (t === "tarjetas") h += infoArbitro(a);
-      h += '<p class="sub">Total del partido</p>' + tabla(["Línea", "Más", "Cuota", "Menos", "Cuota"], c.total_lineas.map(function (l) {
-        return [l[0], pct(l[1], 0), cuota(l[1]), pct(1 - l[1], 0), cuota(1 - l[1])]; }));
+      var filas = c.mercado
+        ? Object.keys(c.mercado).map(Number).sort(function (x, y) { return x - y; }).map(function (l) {
+            var m = c.mercado[String(l)];
+            return [l, pct(m.p, 0), cuota(m.p) + ' <span class="sub">(' + num(m.mejor_mas[1]) + ')</span>',
+              pct(1 - m.p, 0), cuota(1 - m.p) + ' <span class="sub">(' + num(m.mejor_menos[1]) + ')</span>']; })
+        : c.total_lineas.map(function (l) { return [l[0], pct(l[1], 0), cuota(l[1]), pct(1 - l[1], 0), cuota(1 - l[1])]; });
+      h += '<p class="sub">Total del partido' + (c.mercado ? ' · entre paréntesis, la mejor cuota real disponible' : '') + '</p>' +
+        tabla(["Línea", "Más", "Cuota", "Menos", "Cuota"], filas);
       h += '<p class="sub">Por equipo (más de la línea): local = ' + esc(a.local) + ', visitante = ' + esc(a.visitante) + '</p>' +
         tabla(["Línea", "Local", "Cuota", "Visitante", "Cuota"], c.local_lineas.map(function (l, k) {
         var v = c.visit_lineas[k]; return [l[0], pct(l[1], 0), cuota(l[1]), pct(v[1], 0), cuota(v[1])]; }));
-      h += '<p class="sub">' + (t === "corners" ? "Los córners se predicen mal: el modelo solo mejora un poco a la media de la liga (✅ Fiable)."
-        : "Tarjetas = amarillas + rojas. Dependen mucho del árbitro y del contexto (derbi, lo que se juega cada equipo).") +
-        ' No hay cuotas históricas de este mercado: compara la cuota justa con la que te ofrezcan.</p></div>';
+      h += '<p class="sub">' + (t === "corners"
+        ? (c.mercado ? "Con precio real no hace falta fiarse del modelo: compara la cuota de tu casa con la mejor de aquí."
+                     : "Los córners se predicen mal: el modelo apenas mejora a la media de la liga (✅ Fiable). Sin cuotas reales, tómalo como orientación.")
+        : "Tarjetas = amarillas + rojas. No existe mercado de tarjetas en la fuente de cuotas, así que esto es solo el modelo.") + '</p></div>';
     });
     return h || '<div class="card sub">Sin datos de córners y tarjetas en esta liga.</div>';
   }
@@ -777,11 +812,11 @@ if (typeof module !== "undefined") module.exports = Motor;
   /* --- fiabilidad de cada mercado (medida en las temporadas de prueba) --- */
   var MARGEN = { "Resultado": 0.04, "Goles": 0.05, "Ambos marcan": 0.06, "Córners": 0.10, "Tarjetas": 0.10 };
   function margenDe(grupo, conMercado, conCuota) {
-    if (grupo === "Ambos marcan" && conCuota) return 0.02;   /* hay precio real: basta con batir al consenso */
+    if (conCuota && (grupo === "Ambos marcan" || grupo === "Córners")) return 0.02;   /* hay precio real: basta con batir al consenso */
     return (MARGEN[grupo] || 0.06) + (conMercado || grupo === "Córners" || grupo === "Tarjetas" ? 0 : 0.04);
   }
   function predecible(grupo, conCuota) {
-    if (grupo === "Ambos marcan" && conCuota) return { t: "precio real de mercado", c: "a" };
+    if (conCuota && (grupo === "Ambos marcan" || grupo === "Córners")) return { t: "precio real de mercado", c: "a" };
     var T = D.derivados && D.derivados.tabla, clave = { "Resultado": "1x", "Goles": "o25", "Ambos marcan": "btts" }[grupo], m = null;
     if (T && clave) T.forEach(function (f) { if (f.clave === clave && f.fuentes["Cuotas del partido"]) m = f.fuentes["Cuotas del partido"].mejora; });
     if (grupo === "Córners") return { t: "muy poco predecible", c: "b" };
@@ -936,7 +971,8 @@ if (typeof module !== "undefined") module.exports = Motor;
         filas.push([esc(s.sel) + b, pct(s.p, 0), "<b>" + num((1 + m) / s.p) + "</b>", '<button class="mas" data-add="' + k + '">＋</button>']);
       });
       if (!filas.length) return;
-      var pr = predecible(g, g === "Ambos marcan" && a.marca.mercado);
+      var conP = (g === "Ambos marcan" && a.marca.mercado) || (g === "Córners" && a.conteos.corners && a.conteos.corners.mercado);
+      var pr = predecible(g, conP);
       h += '<div class="grupo-t">' + g + (pr.t ? ' <span class="pill ' + pr.c + '">' + pr.t + '</span>' : '') + '</div>' +
         '<div class="selt">' + tabla(["", "Prob.", "Pide ≥", ""], filas) + '</div>';
       if (g === "Tarjetas") h += infoArbitro(a);
@@ -1364,6 +1400,16 @@ if (typeof module !== "undefined") module.exports = Motor;
 
   /* ---------- fiabilidad ---------- */
   function nomTemp(t) { return String(t).slice(0, 2) + "/" + String(t).slice(2); }
+  function bloqueAjuste(aj) {
+    var h = '<h3>Ajuste por el contexto del partido</h3><p class="sub">Con el mismo rating de tarjetas, ¿cambia algo que haya favorito claro? ' +
+      'Se ajusta fuera de la prueba y se mide dentro (' + aj.n_test + ' partidos). Brier: menor = mejor.</p>' +
+      tabla(["", "Brier"], [["Solo el rating", num(aj.brier_sin, 5)], ["Con el contexto", num(aj.brier_con, 5)]]) +
+      '<p>Diferencia: <b>' + signo(aj.dif, 5) + '</b> (IC 95 %: ' + num(aj.ic_lo, 5) + ' a ' + num(aj.ic_hi, 5) + ') → <b>' +
+      (aj.usar ? "mejora real, la app lo aplica" : "no se distingue del azar, la app no lo aplica") + '</b>.</p>';
+    if (aj.ejemplos) h += tabla(["Diferencia de goles esperada", "Efecto sobre las tarjetas"],
+      aj.ejemplos.map(function (e) { return [e[0] === 0.2 ? "0.2 (igualado)" : e[0] === 2 ? "2.0 (favorito claro)" : String(e[0]), "×" + num(e[1])]; }));
+    return h + '<p class="sub">También probé meter al árbitro: no mejoró de forma medible (solo hay árbitro en la Premier, y con 466 partidos de prueba no da para distinguirlo del azar).</p>';
+  }
   function vistaFiab() {
     var h = '<div class="card"><h2>¿Cuánto se acerca cada estimación al mercado?</h2>';
     if (D.modelo && D.modelo.metricas) {
@@ -1420,8 +1466,8 @@ if (typeof module !== "undefined") module.exports = Motor;
         tabla(["Más de", "Pasó", "Modelo dijo", "Mejora vs liga"], c.evaluacion.map(function (e) {
           return [e.linea, pct(e.frecuencia), pct(e.p_media_modelo), signo(100 * (e.brier_liga - e.brier_modelo) / e.brier_liga, 1) + " %"]; })) +
         '<p class="sub">Mejora = cuánto baja el error (Brier) frente a usar la frecuencia de la liga.</p>' +
-        '<p class="sub">' + (t === "corners" ? "Mejora pequeña: los córners de un partido son muy aleatorios. Úsalo para descartar líneas mal puestas, no para buscar valor fino."
-          : "Las tarjetas se predicen algo mejor (los equipos y las ligas tienen estilos estables), pero el árbitro pesa mucho y el modelo no lo incluye.") + '</p></div>';
+        '<p class="sub">' + (t === "corners" ? "Mejora pequeña: los córners de un partido son muy aleatorios. Probé añadir faltas, tiros y el contexto del partido y ninguno mejoró nada. Donde hay cuotas reales, la app las usa en lugar del modelo."
+          : "Las tarjetas se predicen algo mejor: los equipos tienen estilos estables.") + '</p>' + (c.ajuste ? bloqueAjuste(c.ajuste) : "") + '</div>';
     });
     /* cuotas reales de ambos marcan */
     var BR = D.btts_real;

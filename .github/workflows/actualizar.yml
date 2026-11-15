@@ -6,6 +6,8 @@ on:
     - cron: "0 14 * * 2"     # martes tarde: cuotas de la jornada entre semana
     - cron: "0 18 * * 5"     # viernes tarde: cuotas del fin de semana
   workflow_dispatch:         # botón "Run workflow" para lanzarlo a mano
+  push:
+    branches: [mejoras]      # TEMPORAL
 
 permissions:
   contents: write

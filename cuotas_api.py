@@ -30,6 +30,11 @@ import requests
 BASE = "https://api.the-odds-api.com/v4"
 REGIONES = "uk"                      # donde más casas publican Ambos marcan
 MERCADO = "btts"
+MERCADO_CORNERS = "alternate_totals_corners"
+# Solo algunas ligas tienen mercado de córners (comprobado: LaLiga sí, Premier y Serie A no).
+# Pedirlo donde no existe gasta crédito igual, así que se limita y se aprende sobre la marcha.
+LIGAS_CORNERS = {"SP1", "SP2"}
+RESERVA_CORNERS = 220                # solo se piden córners si sobra presupuesto
 RESERVA = 60                         # nunca bajar de aquí: deja margen para el resto del mes
 MAX_POR_EJECUCION = 40               # tope de partidos nuevos por ejecución
 HORAS_REFRESCO = 20                  # repetir una cuota guardada solo si es más vieja que esto
@@ -118,21 +123,51 @@ class ClienteCuotas:
         d = self._get(f"sports/{liga_api}/events")
         return d if isinstance(d, list) else []
 
-    def btts(self, liga_api, evento_id):
+    def cuotas(self, liga_api, evento_id, con_corners=False):
+        """Pide Ambos marcan y, si procede, córners. Cuesta 1 crédito por mercado."""
+        mercados = MERCADO + ("," + MERCADO_CORNERS if con_corners else "")
         d = self._get(f"sports/{liga_api}/events/{evento_id}/odds",
-                      regions=REGIONES, markets=MERCADO, oddsFormat="decimal")
+                      regions=REGIONES, markets=mercados, oddsFormat="decimal")
         if not isinstance(d, dict):
-            return None
-        casas = []
+            return None, None
+        casas, corners = [], {}
         for b in d.get("bookmakers", []):
+            nombre = b.get("title") or b.get("key")
             for m in b.get("markets", []):
-                if m.get("key") != MERCADO:
-                    continue
-                precios = {o.get("name"): o.get("price") for o in m.get("outcomes", [])}
-                si, no = precios.get("Yes"), precios.get("No")
-                if si and no and si > 1 and no > 1:
-                    casas.append({"casa": b.get("title") or b.get("key"), "si": float(si), "no": float(no)})
-        return casas or None
+                if m.get("key") == MERCADO:
+                    precios = {o.get("name"): o.get("price") for o in m.get("outcomes", [])}
+                    si, no = precios.get("Yes"), precios.get("No")
+                    if si and no and si > 1 and no > 1:
+                        casas.append({"casa": nombre, "si": float(si), "no": float(no)})
+                elif m.get("key") == MERCADO_CORNERS:
+                    for o in m.get("outcomes", []):
+                        linea, lado, precio = o.get("point"), o.get("name"), o.get("price")
+                        if linea is None or not precio or precio <= 1 or lado not in ("Over", "Under"):
+                            continue
+                        fila = corners.setdefault(str(linea), {})
+                        fila.setdefault(nombre, {})[lado] = float(precio)
+        return (casas or None), (corners or None)
+
+
+def consenso_corners(corners):
+    """Por cada línea: probabilidad sin margen (solo casas que publican los dos lados) y mejor precio."""
+    if not corners:
+        return None
+    salida = {}
+    for linea, casas in corners.items():
+        ps, mas, menos = [], [], []
+        for nombre, d in casas.items():
+            o, u = d.get("Over"), d.get("Under")
+            if o and u:
+                ps.append((1 / o) / (1 / o + 1 / u))
+                mas.append((nombre, o))
+                menos.append((nombre, u))
+        if len(ps) < 2:
+            continue
+        mm, mn = max(mas, key=lambda x: x[1]), max(menos, key=lambda x: x[1])
+        salida[linea] = {"p": round(sum(ps) / len(ps), 4), "n": len(ps),
+                         "mejor_mas": [mm[0], round(mm[1], 2)], "mejor_menos": [mn[0], round(mn[1], 2)]}
+    return salida or None
 
 
 def consenso(casas):
@@ -195,6 +230,9 @@ def recoger(clave, proximos, estado, hoy, log=print):
     """
     cli = ClienteCuotas(clave, estado)
     salida, nuevo = {}, dict(estado or {})
+    memoria = nuevo.get("_ligas_corners") if isinstance(nuevo.get("_ligas_corners"), list) else None
+    ligas_corners = set(memoria) if memoria else set(LIGAS_CORNERS)
+    sin_corners = set()
     limite = _fecha(hoy)
     por_liga = {}
     for p in proximos:
@@ -221,18 +259,28 @@ def recoger(clave, proximos, estado, hoy, log=print):
                     continue
             if pedidos >= MAX_POR_EJECUCION or not cli.hay_presupuesto():
                 break
-            casas = cli.btts(liga_api, ev.get("id"))
+            con_corners = (fx["liga"] in ligas_corners and cli.hay_presupuesto(2)
+                           and (cli.restantes is None or cli.restantes > RESERVA_CORNERS))
+            casas, corners = cli.cuotas(liga_api, ev.get("id"), con_corners)
             pedidos += 1
             c = consenso(casas)
             if c:
+                cc = consenso_corners(corners)
+                if cc:
+                    c["corners"] = cc
+                    ligas_corners.add(fx["liga"])
+                elif con_corners:
+                    sin_corners.add(fx["liga"])
                 c["actualizado"] = time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime())
                 salida[k] = c
                 nuevo[k] = {"ts": _ahora(), "cuotas": c}
     # limpieza: olvidar partidos de hace más de 60 días
     corte = _ahora() - 60 * 86400
-    nuevo = {k: v for k, v in nuevo.items() if v.get("ts", 0) > corte}
+    nuevo = {k: v for k, v in nuevo.items() if isinstance(v, dict) and v.get("ts", 0) > corte}
+    nuevo["_ligas_corners"] = sorted(ligas_corners - sin_corners)
     resumen = {"consultas": pedidos, "creditos": cli.usados, "restantes": cli.restantes,
-               "partidos_con_cuota": len(salida)}
+               "partidos_con_cuota": len(salida),
+               "con_corners": sum(1 for c in salida.values() if c.get("corners"))}
     return salida, nuevo, cli.avisos, resumen
 
 
