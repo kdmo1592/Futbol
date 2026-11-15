@@ -11,8 +11,9 @@ Qué hace:
   2. Descarga los próximos partidos con sus cuotas.
   3. Calcula las fuerzas de cada equipo (goles, rating de mercado, córners y tarjetas)
      y entrena el modelo de mercado.
-  4. Mide cada modelo en temporadas que no ha visto (pestaña Fiabilidad) y hace el
-     backtest de la regla de "Ambos marcan".
+  4. Mide cada modelo en temporadas que no ha visto (pestaña Fiable), hace el backtest
+     de la regla de "Ambos marcan", mide los mercados derivados de las cuotas del propio
+     partido y comprueba si la forma, el descanso o los tiros añaden algo.
   5. Escribe data.json, que es lo que lee la app (index.html).
 """
 
@@ -155,7 +156,17 @@ def fuerzas_json(d, aj):
             "n": [int(v) for v in nj]}
 
 
-def exportar(hist, fx, modelo, errores, hoy, conteos=None, btts=None):
+def primeras_cuotas(salida):
+    """Primera probabilidad de mercado que vio el robot para cada partido (para ver cómo se mueve la cuota)."""
+    try:
+        previo = json.loads(Path(salida).read_text(encoding="utf-8"))
+        return {(f["liga"], f["local"], f["visitante"]): (f.get("mer_ini") or f.get("mer1x2"), f.get("mer_ini_fecha") or previo.get("hoy"))
+                for f in previo.get("proximos", []) if f.get("mer_ini") or f.get("mer1x2")}
+    except Exception:                                   # noqa: BLE001
+        return {}
+
+
+def exportar(hist, fx, modelo, errores, hoy, conteos=None, btts=None, derivados=None, variables=None, previas=None):
     hoy_d = int(np.datetime64(hoy.to_datetime64(), "D").astype(np.int64))
     ligas, fuerzas, ultimo = [], {}, {}
     for cod in mf.LIGAS:
@@ -221,6 +232,9 @@ def exportar(hist, fx, modelo, errores, hoy, conteos=None, btts=None):
                 "b365": _lista(b1, 2) if np.isfinite(b1).all() else None,
                 "b365ou": _lista(bou, 2) if np.isfinite(bou).all() else None,
             })
+            ini = (previas or {}).get((r["liga"], r["local_n"], r["visitante_n"]))
+            if ini and ini[0] and proximos[-1]["mer1x2"]:
+                proximos[-1]["mer_ini"], proximos[-1]["mer_ini_fecha"] = ini[0], ini[1]
 
     mod = None
     if modelo is not None and modelo.modelos:
@@ -231,14 +245,16 @@ def exportar(hist, fx, modelo, errores, hoy, conteos=None, btts=None):
                             for r in modelo.metricas.to_dict("records")],
                "info": modelo.info}
 
-    return {"version": 2, "generado": pd.Timestamp.now(tz="UTC").strftime("%Y-%m-%d %H:%M UTC"),
+    return {"version": 3, "generado": pd.Timestamp.now(tz="UTC").strftime("%Y-%m-%d %H:%M UTC"),
             "hoy": f"{hoy:%Y-%m-%d}", "datos_hasta": f"{hist['fecha'].max():%Y-%m-%d}",
             "cobertura_proximos": ([f"{fx['fecha'].min():%Y-%m-%d}", f"{fx['fecha'].max():%Y-%m-%d}"]
                                    if len(fx) else None),
             "parametros": {"rho_goles": RHO, "vida_media": VIDA_MEDIA, "k_prior": K_PRIOR,
-                           "min_partidos": mf.MIN_PARTIDOS_EQUIPO, "tope_conteo": es.TOPE_CONTEO},
+                           "min_partidos": mf.MIN_PARTIDOS_EQUIPO, "tope_conteo": es.TOPE_CONTEO,
+                           "rho_mercado": (derivados or {}).get("rho_mercado", RHO)},
             "ligas": ligas, "fuerzas": fuerzas, "ultimo_partido": ultimo, "modelo": mod,
             "conteos": limpiar(conteos), "estrategias": {"btts": limpiar(btts)}, "arbitros": arbitros,
+            "derivados": limpiar(derivados), "variables": limpiar(variables),
             "partidos": partidos, "proximos": proximos, "avisos": errores}
 
 
@@ -287,7 +303,17 @@ def main(descargador=mf.descargar_csv, salida=SALIDA, hoy=None):
         except Exception as e:                          # noqa: BLE001
             errores.append(f"backtest de Ambos marcan no disponible: {e}")
             traceback.print_exc()
-    datos = exportar(hist, fx, modelo, errores, hoy, conteos, btts)
+    derivados, variables = None, None
+    if modelo is not None and modelo.variables is not None and modelo.info:
+        try:
+            v = es.anadir_implicitas(modelo.variables, modelo.inv)
+            derivados = es.evaluar_derivados(v, test, RHO)
+            aviso(f"Mercados derivados: {derivados['n']} partidos de prueba, ajuste de empates {derivados['rho_mercado']}")
+            variables = es.probar_variables(v, hist, test, derivados["rho_mercado"])
+        except Exception as e:                          # noqa: BLE001
+            errores.append(f"mercados derivados sin evaluar: {e}")
+            traceback.print_exc()
+    datos = exportar(hist, fx, modelo, errores, hoy, conteos, btts, derivados, variables, primeras_cuotas(salida))
     Path(salida).write_text(json.dumps(datos, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
     aviso(f"Escrito {salida} ({Path(salida).stat().st_size / 1024:.0f} KB) en {time.time() - t0:.0f} s")
     return datos

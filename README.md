@@ -17,13 +17,23 @@ Ligas: LaLiga, LaLiga 2, Premier League, Bundesliga, Serie A, Ligue 1 y Allsvens
 
 | Pestaña | Para qué |
 |---|---|
-| 📅 Jornada | Próximos partidos con el modelo y el mercado. Δ grande = partido para estudiar. |
-| 🔍 Partido | Probabilidades de todos los mercados, marcadores, córners, tarjetas, forma y cara a cara. |
-| 📊 Variables | Todo para decidir un partido: forma reciente frente a su media, dificultad de los últimos rivales, rendimiento frente a lo esperado, descanso, mercado, Ambos marcan (con tu regla del 62 %), córners, tarjetas y árbitro. Desde aquí registras apuestas con la cuota real. |
-| 🎛️ Lab | Mueve los goles esperados a mano y guarda tu pronóstico. |
+| 📅 Jornada | Próximos partidos y las selecciones más probables. Toca un partido para abrir su informe. |
+| 📋 Informe | El asesor de cada partido: resumen, probabilidad y **cuota mínima** de cada mercado (resultado, goles, ambos marcan, córners, tarjetas), factores, lista de comprobaciones y tu apuesta (simple o combinada) con importe recomendado según tu presupuesto. |
+| 🔍 Detalle | Nuestras estimaciones comparadas entre sí y con el mercado, marcadores, forma y cara a cara. |
+| 🎛️ Lab | Mueve los goles esperados a mano (por ejemplo, por una baja) y mira cómo cambian las cuotas justas. |
 | 🏆 Liga | Clasificación y mapa de fuerzas. |
-| 📝 Diario | Tus pronósticos (¿predices mejor que el modelo y el mercado?) y tus apuestas (beneficio y ROI). |
-| ✅ Fiable | Cuánto se acerca cada modelo al mercado, si el modelo de córners y tarjetas aporta algo y el backtest de Ambos marcan. |
+| 📝 Diario | Presupuesto, apuestas (se liquidan solas; beneficio y ROI) y pronósticos. |
+| ✅ Fiable | Las pruebas: qué estimación predice mejor, de dónde salen las probabilidades del informe, si la forma o el descanso añaden algo, córners, tarjetas y el backtest de Ambos marcan. |
+
+## Cómo decide el informe
+
+- Si el partido tiene cuotas (jornada en curso), la base son esas cuotas sin el margen de la casa, convertidas en goles
+  esperados. De ahí salen todos los mercados. En las temporadas de prueba es lo que mejor predice, por delante de cualquier modelo propio.
+- Si no tiene cuotas, usa el mejor modelo propio y sube el margen de seguridad.
+- "Pide ≥" es la cuota justa más un margen de seguridad (mayor en los mercados menos predecibles). Por debajo, no hay valor.
+- La forma, el descanso y los tiros a puerta se muestran como contexto: el robot comprueba cada día si mejoran la
+  predicción y, hasta ahora, no lo hacen. Lo que el mercado puede no haber recogido aún son las noticias: bajas y alineaciones.
+- Fuentes de xG gratuitas (Understat) no están disponibles de forma fiable; por eso no se usan.
 
 ## Archivos
 

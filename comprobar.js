@@ -26,6 +26,13 @@ for (const f of D.proximos) {
   }
   for (const m of Motor.mercados(a.M)) if (!ok(m[2])) fallos.push(`${nombre} · ${m[0]} ${m[1]}: ${m[2]}`);
   for (const x of [a.marca.pl, a.marca.pv, a.marca.pb]) if (!ok(x)) fallos.push(`${nombre} · ambos marcan: ${x}`);
+  const S = a.selecciones || [];
+  if (S.length < 14) fallos.push(`${nombre} · informe con solo ${S.length} selecciones`);
+  for (const x of S) if (!ok(x.p)) fallos.push(`${nombre} · informe ${x.mercado} ${x.sel}: ${x.p}`);
+  if (S.length >= 3 && Math.abs(S[0].p + S[1].p + S[2].p - 1) > 1e-3) fallos.push(`${nombre} · informe: el 1X2 no suma 1`);
+  const pc = Motor.probCombinada(S.filter((x) => x.tipo === "DO" && x.lado === 0 || x.tipo === "BTTS" && x.lado === 1)
+    .map((x) => Object.assign({ partido: nombre, lam: a.base.lam, rho: a.base.rho }, x)));
+  if (!ok(pc)) fallos.push(`${nombre} · combinada: ${pc}`);
   for (const c of Object.values(a.conteos || {}))
     for (const l of c.total_lineas.concat(c.local_lineas, c.visit_lineas)) if (!ok(l[1])) fallos.push(`${nombre} · ${c.nombre} ${l}`);
 }

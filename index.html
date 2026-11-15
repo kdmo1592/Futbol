@@ -80,6 +80,15 @@ input[type=range]{width:100%;height:34px}
 .kpis{display:flex;flex-wrap:wrap;gap:8px;margin:6px 0}.kpis div{flex:1 1 30%;background:var(--bg);border-radius:10px;padding:7px 9px}
 .kpis b{display:block;font-size:17px}.kpis span{font-size:11.5px;color:var(--sub)}
 svg text{fill:var(--txt)}
+details{border-top:1px solid var(--linea);padding:2px 0}details summary{font-weight:600;padding:9px 0;cursor:pointer}
+.grupo-t{font-size:13px;color:var(--sub);margin:10px 0 2px;font-weight:600}
+button.mas{border:1px solid var(--acento);background:transparent;color:var(--acento);border-radius:8px;padding:2px 9px;font-size:15px;font-weight:700}
+.leg{display:flex;justify-content:space-between;gap:8px;align-items:center;padding:6px 0;border-bottom:1px solid var(--linea);font-size:14px}
+.pill{display:inline-block;border-radius:8px;padding:1px 7px;font-size:11.5px;font-weight:600;background:var(--linea);color:var(--sub)}
+.pill.a{background:rgba(39,174,96,.16);color:#1e8449}.pill.m{background:rgba(230,126,34,.16);color:#af601a}.pill.b{background:rgba(192,57,43,.14);color:#c0392b}
+a{color:var(--acento)}
+.selt table{table-layout:fixed}.selt td:first-child,.selt th:first-child{white-space:normal;width:52%}
+.selt th:nth-child(2),.selt td:nth-child(2){width:16%}.selt th:nth-child(3),.selt td:nth-child(3){width:19%}.selt th:nth-child(4),.selt td:nth-child(4){width:13%}
 </style>
 </head>
 <body>
@@ -87,8 +96,8 @@ svg text{fill:var(--txt)}
 <main id="vista"></main>
 <nav id="nav">
   <button data-tab="jornada"><span>📅</span>Jornada</button>
-  <button data-tab="partido"><span>🔍</span>Partido</button>
-  <button data-tab="vars"><span>📊</span>Variables</button>
+  <button data-tab="vars"><span>📋</span>Informe</button>
+  <button data-tab="partido"><span>🔍</span>Detalle</button>
   <button data-tab="lab"><span>🎛️</span>Lab</button>
   <button data-tab="liga"><span>🏆</span>Liga</button>
   <button data-tab="diario"><span>📝</span>Diario</button>
@@ -288,22 +297,85 @@ var Motor = (function () {
         lam: invertir(fx.mer1x2, fx.merou), b365: fx.b365, b365ou: fx.b365ou };
       orden.push("Mercado (cuotas)");
     }
-    /* estimación principal: la que mejor predijo en el test (la decide el robot cada día) */
+    /* estimación principal propia: la que mejor predijo en el test (la decide el robot cada día) */
     var pref = D.modelo && D.modelo.principal;
     var principal = (pref && fuentes[pref]) ? pref :
       (fuentes["Modelo de mercado"] ? "Modelo de mercado" : (fuentes["Rating de mercado"] ? "Rating de mercado" : "Modelo de goles"));
-    var lp = fuentes[principal].lam;
-    /* "Ambos marcan" con el rating de mercado: es la misma fuente que usa el backtest de la regla */
-    var fb = fuentes["Rating de mercado"] ? "Rating de mercado" : "Modelo de goles", lb = fuentes[fb].lam;
-    var marca = pMarcar(matriz(lb[0], lb[1], fb === "Modelo de goles" ? rho : 0));
-    marca.fuente = fb;
-    return { liga: liga, local: local, visitante: visitante, fecha: fecha, fuentes: fuentes, orden: orden,
-      principal: principal, avisos: avisos, fixture: fx, M: matriz(lp[0], lp[1], principal === "Modelo de goles" ? rho : 0),
+    /* BASE DEL INFORME: si el partido tiene cuotas, los goles esperados que las explican (es lo que
+       mejor predice todos los mercados en la prueba); si no, la estimación propia. */
+    var rm = D.parametros.rho_mercado == null ? rho : D.parametros.rho_mercado, mer = fuentes["Mercado (cuotas)"];
+    var base = mer ? { fuente: "Mercado (cuotas)", lam: mer.lam, rho: rm, mercado: true }
+      : { fuente: principal, lam: fuentes[principal].lam, mercado: false,
+          rho: principal === "Modelo de goles" ? rho : (principal === "Rating de mercado" ? 0 : rm) };
+    var M = matriz(base.lam[0], base.lam[1], base.rho), marca = pMarcar(M);
+    marca.fuente = base.fuente;
+    var a = { liga: liga, local: local, visitante: visitante, fecha: fecha, fuentes: fuentes, orden: orden,
+      principal: principal, base: base, avisos: avisos, fixture: fx, M: M,
       conteos: conteos(D, liga, i, j), marca: marca, i: i, j: j };
+    a.selecciones = selecciones(a);
+    return a;
+  }
+  /* ¿se cumple la selección con el marcador i-j? (null = no depende de los goles) */
+  function predicado(tipo, lado, linea) {
+    if (tipo === "1X2") return function (i, j) { return lado === 0 ? i > j : lado === 1 ? i === j : i < j; };
+    if (tipo === "DO") return function (i, j) { return lado === 0 ? i >= j : lado === 1 ? i !== j : i <= j; };
+    if (tipo === "GOL") return function (i, j) { return lado === 1 ? i + j > linea : i + j < linea; };
+    if (tipo === "BTTS") return function (i, j) { var b = i > 0 && j > 0; return lado === 1 ? b : !b; };
+    return null;
+  }
+  /* todas las selecciones del informe, con su probabilidad */
+  function selecciones(a) {
+    var M = a.M, mer = a.base.mercado ? a.fuentes["Mercado (cuotas)"] : null, out = [];
+    var p3 = mer ? mer.p : desglosar(M).p, b3 = mer && mer.b365, bou = mer && mer.b365ou;
+    function add(grupo, mercado, sel, tipo, lado, linea, p, b365) {
+      out.push({ grupo: grupo, mercado: mercado, sel: sel, tipo: tipo, lado: lado, linea: linea, p: clip(p, 0, 1), b365: b365 || null });
+    }
+    add("Resultado", "1X2", "Gana " + a.local, "1X2", 0, null, p3[0], b3 && b3[0]);
+    add("Resultado", "1X2", "Empate", "1X2", 1, null, p3[1], b3 && b3[1]);
+    add("Resultado", "1X2", "Gana " + a.visitante, "1X2", 2, null, p3[2], b3 && b3[2]);
+    add("Resultado", "Doble oportunidad", a.local + " o empate (1X)", "DO", 0, null, p3[0] + p3[1]);
+    add("Resultado", "Doble oportunidad", "No hay empate (12)", "DO", 1, null, p3[0] + p3[2]);
+    add("Resultado", "Doble oportunidad", a.visitante + " o empate (X2)", "DO", 2, null, p3[1] + p3[2]);
+    [1.5, 2.5, 3.5].forEach(function (l) {
+      var pm = (l === 2.5 && mer && mer.ov != null) ? mer.ov : suma(M, function (i, j) { return i + j > l; });
+      add("Goles", "Goles", "Más de " + l, "GOL", 1, l, pm, l === 2.5 && bou && bou[0]);
+      add("Goles", "Goles", "Menos de " + l, "GOL", 0, l, 1 - pm, l === 2.5 && bou && bou[1]);
+    });
+    add("Ambos marcan", "Ambos marcan", "Sí", "BTTS", 1, null, a.marca.pb);
+    add("Ambos marcan", "Ambos marcan", "No", "BTTS", 0, null, 1 - a.marca.pb);
+    [["corners", "COR", "Córners"], ["tarjetas", "TAR", "Tarjetas"]].forEach(function (t) {
+      var c = a.conteos && a.conteos[t[0]]; if (!c) return;
+      /* las dos líneas más cercanas al 50 % */
+      c.total_lineas.slice().sort(function (x, y) { return Math.abs(x[1] - 0.5) - Math.abs(y[1] - 0.5); }).slice(0, 2)
+        .sort(function (x, y) { return x[0] - y[0]; }).forEach(function (l) {
+          add(t[2], t[2], "Más de " + l[0], t[1], 1, l[0], l[1]);
+          add(t[2], t[2], "Menos de " + l[0], t[1], 0, l[0], 1 - l[1]);
+        });
+    });
+    return out;
+  }
+  /* probabilidad de acertar varias selecciones a la vez. Las de un mismo partido que dependen de los
+     goles se calculan juntas con la matriz de marcadores (no son independientes). */
+  function probCombinada(legs) {
+    var grupos = {}, p = 1;
+    legs.forEach(function (l) { (grupos[l.partido] = grupos[l.partido] || []).push(l); });
+    Object.keys(grupos).forEach(function (k) {
+      var gol = [], otros = [];
+      grupos[k].forEach(function (l) { (predicado(l.tipo, l.lado, l.linea) && l.lam ? gol : otros).push(l); });
+      if (gol.length === 1) p *= gol[0].p;
+      else if (gol.length > 1) {
+        var Mx = matriz(gol[0].lam[0], gol[0].lam[1], gol[0].rho);
+        var fs = gol.map(function (l) { return predicado(l.tipo, l.lado, l.linea); });
+        p *= suma(Mx, function (i, j) { for (var q = 0; q < fs.length; q++) if (!fs[q](i, j)) return false; return true; });
+      }
+      otros.forEach(function (l) { p *= l.p; });
+    });
+    return p;
   }
   return { matriz: matriz, desglosar: desglosar, mercados: mercados, lambdas: lambdas, softmax: softmax,
     invertir: invertir, descanso: descanso, ultimoAntes: ultimoAntes, analizar: analizar, fixture: fixture,
-    pMas: pMas, pMarcar: pMarcar, conteos: conteos, G: G };
+    pMas: pMas, pMarcar: pMarcar, conteos: conteos, selecciones: selecciones, predicado: predicado,
+    probCombinada: probCombinada, G: G };
 })();
 if (typeof module !== "undefined") module.exports = Motor;
 </script>
@@ -316,7 +388,8 @@ if (typeof module !== "undefined") module.exports = Motor;
     "Mercado (cuotas)": "var(--mer)", "Tu estimación": "var(--tu)" };
   var st = { tab: "jornada", filtro: "todas", liga: null, local: null, visitante: null, a: null,
     lab: { ll: 1.4, lv: 1.1, rho: -0.10 }, labA: null, ligaTabla: null };
-  var CLAVE = "futbol_diario_v1", CLAVE_AP = "futbol_apuestas_v1", CLAVE_COPIA = "futbol_ultima_copia";
+  var CLAVE = "futbol_diario_v1", CLAVE_AP = "futbol_apuestas_v1", CLAVE_COPIA = "futbol_ultima_copia",
+    CLAVE_CFG = "futbol_cfg_v1", CLAVE_BOL = "futbol_boleto_v1";
   var $ = function (id) { return document.getElementById(id); };
   function hoyLocal() {
     var d = new Date();
@@ -347,7 +420,7 @@ if (typeof module !== "undefined") module.exports = Motor;
         (retraso >= 2 ? " · ⚠️ el robot lleva " + retraso + " días sin actualizar (mira Actions)" : "");
       st.liga = d.ligas[0].cod; st.ligaTabla = st.liga;
       var eq = ligaDe(st.liga).equipos_temporada; st.local = eq[0]; st.visitante = eq[1];
-      liquidar();
+      liquidar(); liquidarApuestas();
       ir(st.tab);
     }).catch(function (e) {
       $("estado-datos").textContent = "Sin datos";
@@ -499,27 +572,36 @@ if (typeof module !== "undefined") module.exports = Motor;
       h += '<div class="card"><h2>No hay partidos próximos cargados</h2><p class="sub">El archivo de próximos partidos ' +
         (cob ? "cubre del " + fechaCorta(cob[0]) + " al " + fechaCorta(cob[1]) : "está vacío") +
         '. Football-Data publica la jornada del fin de semana el viernes por la tarde y la de entre semana el martes. ' +
-        'El robot lo recoge solo: vuelve a mirar entonces. Mientras, puedes analizar cualquier cruce en 🔍 Partido.</p></div>';
+        'El robot lo recoge solo: vuelve a mirar entonces. Mientras, puedes pedir el informe de cualquier cruce en 📋 Informe (sin cuotas es menos fiable).</p></div>';
       return h;
     }
-    var dia = "";
+    var dia = "", cuerpo = "", top = [];
     lista.forEach(function (f) {
-      if (f.fecha !== dia) { dia = f.fecha; h += '<h3 style="margin:10px 2px 6px">' + fechaLarga(f.fecha) + '</h3>'; }
+      if (f.fecha !== dia) { dia = f.fecha; cuerpo += '<h3 style="margin:10px 2px 6px">' + fechaLarga(f.fecha) + '</h3>'; }
       var linea = "", badge = "";
       try {
-        var a = analisis(f.liga, f.local, f.visitante), p = a.fuentes[a.principal].p;
-        linea = "Modelo " + p.map(function (x) { return Math.round(100 * x); }).join("/");
-        if (f.mer1x2) {
-          linea += " · Mercado " + f.mer1x2.map(function (x) { return Math.round(100 * x); }).join("/");
-          var dmax = 0; p.forEach(function (x, k) { if (Math.abs(x - f.mer1x2[k]) > Math.abs(dmax)) dmax = x - f.mer1x2[k]; });
-          badge = '<span class="badge' + (Math.abs(dmax) >= 0.05 ? " alto" : "") + '">Δ ' + (100 * dmax > 0 ? "+" : "") + (100 * dmax).toFixed(1) + ' pp</span>';
-        }
+        var a = analisis(f.liga, f.local, f.visitante), S = a.selecciones, mejor = null;
+        linea = "1X2 " + [S[0].p, S[1].p, S[2].p].map(function (x) { return Math.round(100 * x); }).join("/") + " · " +
+          num(a.base.lam[0] + a.base.lam[1], 1) + " goles · Ambos " + pct(a.marca.pb, 0);
+        S.forEach(function (x) {
+          if (x.b365 && x.b365 <= 4) { var ev = x.p * x.b365 - 1; if (ev >= 0.02 && (!mejor || ev > mejor.ev)) mejor = { ev: ev, s: x }; }
+          if (["Resultado", "Goles", "Ambos marcan"].indexOf(x.grupo) >= 0 && x.p >= 0.7 && x.p < 0.97) top.push({ f: f, s: x });
+        });
+        if (!a.base.mercado) badge = '<span class="badge">sin cuotas</span>';
+        else if (mejor) badge = '<span class="badge alto">Bet365 ' + signo(100 * mejor.ev, 1) + ' % · ' + esc(mejor.s.sel) + '</span>';
       } catch (e) { linea = '<span class="aviso">' + esc(e.message) + '</span>'; }
-      h += '<button class="partido" data-l="' + f.liga + '" data-a="' + esc(f.local) + '" data-b="' + esc(f.visitante) + '">' +
+      cuerpo += '<button class="partido" data-l="' + f.liga + '" data-a="' + esc(f.local) + '" data-b="' + esc(f.visitante) + '">' +
         '<div class="meta">' + esc(f.hora) + ' · ' + esc(nombreLiga(f.liga)) + ' ' + badge + '</div><b>' + esc(f.local) + ' – ' + esc(f.visitante) + '</b>' +
         '<div class="meta">' + linea + '</div></button>';
     });
-    return h + '<p class="sub">Δ = mayor diferencia entre el modelo y el mercado. Grande (naranja) = partido para estudiar, no una apuesta: casi siempre el mercado sabe algo que el modelo no ve.</p>';
+    if (top.length) {
+      top.sort(function (x, y) { return y.s.p - x.s.p; });
+      h += '<div class="card"><details><summary>Las selecciones más probables (' + Math.min(top.length, 10) + ')</summary>' +
+        tabla(["Partido", "Selección", "Prob.", "Justa"], top.slice(0, 10).map(function (t) {
+          return [esc(t.f.local) + " – " + esc(t.f.visitante), esc(t.s.mercado === "Goles" ? t.s.sel + " goles" : t.s.mercado === "Ambos marcan" ? "Ambos: " + t.s.sel : t.s.sel), pct(t.s.p, 0), cuota(t.s.p)]; })) +
+        '<p class="sub">Aciertan a menudo, pero pagan poco: solo ganan dinero si tu casa da más que la cuota justa. Son útiles para combinadas cortas; abre el informe del partido para añadirlas.</p></details></div>';
+    }
+    return h + cuerpo + '<p class="sub">Toca un partido para ver su informe. La etiqueta naranja marca cuando la cuota de Bet365 supera en un 2 % o más a la cuota justa del consenso del mercado (ocurre poco). No se marca en cuotas mayores de 4: ahí la cuota justa de las sorpresas está inflada.</p>';
   }
   function fechaLarga(f) {
     var d = new Date(f + "T12:00:00"), dias = ["domingo", "lunes", "martes", "miércoles", "jueves", "viernes", "sábado"];
@@ -528,7 +610,7 @@ if (typeof module !== "undefined") module.exports = Motor;
   function engancharJornada() {
     Array.prototype.forEach.call(document.querySelectorAll(".chip"), function (b) { b.onclick = function () { st.filtro = this.dataset.f; ir("jornada"); }; });
     Array.prototype.forEach.call(document.querySelectorAll(".partido"), function (b) {
-      b.onclick = function () { st.liga = this.dataset.l; st.local = this.dataset.a; st.visitante = this.dataset.b; st.a = null; ir("partido", true); };
+      b.onclick = function () { st.liga = this.dataset.l; st.local = this.dataset.a; st.visitante = this.dataset.b; st.a = null; ir("vars", true); };
     });
   }
 
@@ -542,7 +624,8 @@ if (typeof module !== "undefined") module.exports = Motor;
     st.a = a;
     var fp = a.fuentes[a.principal], h = '<div class="card"><h2>' + esc(a.local) + ' – ' + esc(a.visitante) + '</h2>';
     a.avisos.forEach(function (x) { h += '<p class="aviso">⚠️ ' + esc(x) + '</p>'; });
-    h += '<p>Estimación principal: <b>' + a.principal + '</b>. Goles esperados <b>' + fp.lam[0].toFixed(2) + ' – ' + fp.lam[1].toFixed(2) + '</b>. ' +
+    h += '<p class="sub">Aquí se comparan nuestras estimaciones entre sí y con el mercado. Para decidir una apuesta, usa 📋 Informe.</p>' +
+      '<p>Mejor estimación propia: <b>' + a.principal + '</b>. Goles esperados <b>' + fp.lam[0].toFixed(2) + ' – ' + fp.lam[1].toFixed(2) + '</b>. ' +
       '1X2: ' + pct(fp.p[0]) + ' / ' + pct(fp.p[1]) + ' / ' + pct(fp.p[2]) + (fp.ov != null ? ' · Más de 2.5: ' + pct(fp.ov) : '') + '.</p>';
     var mer = a.fuentes["Mercado (cuotas)"];
     if (mer) {
@@ -551,7 +634,7 @@ if (typeof module !== "undefined") module.exports = Motor;
       h += '<p>Mayor diferencia con el mercado: <b>' + ["Local", "Empate", "Visitante"][k] + '</b> (' + (100 * dif[k] > 0 ? "+" : "") + (100 * dif[k]).toFixed(1) +
         ' pp). Busca qué ve el mercado (bajas, rotación, calendario) antes de fiarte de la diferencia.</p>';
     } else h += '<p class="sub">Sin cuotas para este cruce: no hay comparación con el mercado. Elige el partido en "Próximo partido" si existe.</p>';
-    h += '<div class="fila"><button class="btn sec peq" id="p-vars">📊 Variables y apuesta</button><button class="btn sec peq" id="p-lab">🎛️ Ajustar en el Lab</button></div></div>';
+    h += '<div class="fila"><button class="btn sec peq" id="p-vars">📋 Informe y apuesta</button><button class="btn sec peq" id="p-lab">🎛️ Ajustar en el Lab</button></div></div>';
     var s1 = {}, s2 = {};
     a.orden.forEach(function (n) { s1[n] = a.fuentes[n].p; if (a.fuentes[n].ov != null) s2[n] = [a.fuentes[n].ov, 1 - a.fuentes[n].ov]; });
     h += '<div class="card"><h3>1X2: cada estimación</h3>' + barras(s1, ["Local", "Empate", "Visitante"]) + '</div>';
@@ -561,7 +644,7 @@ if (typeof module !== "undefined") module.exports = Motor;
     if (mer) h += '<div class="card"><h3>' + a.principal + ' frente al mercado</h3>' + tablaComparacion(a, fp.p, fp.ov) + '</div>';
     h += '<div class="card"><h3>Goles</h3>' + columnasGoles(a.M) + '</div>';
     h += '<div class="card"><h3>Marcadores</h3>' + mapaMarcadores(a.M) + '</div>';
-    h += '<div class="card"><h3>Todos los mercados (' + a.principal + ')</h3>' + tabla(["Mercado", "Selección", "Prob.", "Cuota justa"],
+    h += '<div class="card"><h3>Todos los mercados (' + (a.base.mercado ? "según las cuotas del partido" : a.base.fuente) + ')</h3>' + tabla(["Mercado", "Selección", "Prob.", "Cuota justa"],
       Motor.mercados(a.M).map(function (m) { return [m[0], m[1], pct(m[2]), cuota(m[2])]; })) +
       '<p class="sub">Cuota justa = sin margen de la casa. Sirve para comparar, no es una cuota real.</p></div>';
     h += bloqueConteos(a);
@@ -621,7 +704,7 @@ if (typeof module !== "undefined") module.exports = Motor;
     if (auto) pintarAnalisis();
   }
 
-  /* ---------- variables de decisión ---------- */
+  /* ---------- informe por partido ---------- */
   function fuerzaEquipos(liga) {
     var F = D.fuerzas[liga], fz = F.mkt || F.gol, L = ligaDe(liga), f = {};
     F.equipos.forEach(function (e, i) { if (fz.n[i] > 0) f[e] = Math.log(fz.att[i] / fz.dfn[i]); });
@@ -661,28 +744,6 @@ if (typeof module !== "undefined") module.exports = Motor;
     var f = B.barrido_equipo.filter(function (x) { return Math.abs(x.umbral - B.umbral_usuario) < 1e-6; })[0];
     return { umbral: B.umbral_usuario, prueba: f ? f.prueba : null, casa_fuera: f ? f.prueba_casa_fuera : null, B: B };
   }
-  function opcionesApuesta(a) {
-    var ops = [];
-    Motor.mercados(a.M).forEach(function (m) {
-      if (m[0] === "1X2") ops.push({ mercado: "1X2", sel: m[1], tipo: "1X2", lado: ["Local", "Empate", "Visitante"].indexOf(m[1]), linea: null, p: m[2], fuente: a.principal });
-      if (m[0] === "Goles totales") { var mas = m[1].indexOf("Más") === 0, l = parseFloat(m[1].split(" ").pop());
-        ops.push({ mercado: "Goles", sel: m[1], tipo: "GOL", lado: mas ? 1 : 0, linea: l, p: m[2], fuente: a.principal }); }
-    });
-    ops.push({ mercado: "Ambos marcan", sel: "Sí", tipo: "BTTS", lado: 1, linea: null, p: a.marca.pb, fuente: a.marca.fuente },
-      { mercado: "Ambos marcan", sel: "No", tipo: "BTTS", lado: 0, linea: null, p: 1 - a.marca.pb, fuente: a.marca.fuente });
-    [["corners", "COR", "Córners"], ["tarjetas", "TAR", "Tarjetas"]].forEach(function (t) {
-      var c = a.conteos && a.conteos[t[0]]; if (!c) return;
-      c.total_lineas.forEach(function (l) {
-        ops.push({ mercado: t[2], sel: "Más de " + l[0], tipo: t[1], lado: 1, linea: l[0], p: l[1], fuente: "modelo de " + t[2].toLowerCase() },
-          { mercado: t[2], sel: "Menos de " + l[0], tipo: t[1], lado: 0, linea: l[0], p: 1 - l[1], fuente: "modelo de " + t[2].toLowerCase() });
-      });
-    });
-    return ops;
-  }
-  function vistaVars() {
-    return '<div class="card">' + selectores("v") + '<button class="btn" id="v-ir">Ver variables</button>' +
-      '<p class="sub">Todo lo que conviene mirar antes de decidir un partido, en una pantalla.</p></div><div id="v-res"></div>';
-  }
   function filaForma(et, s) {
     if (!s) return [et, "0", "—", "—", "—", "—", "—", "—", "—"];
     return [et, s.n, num(s.pts), num(s.gf), num(s.gc), Math.round(100 * s.marca) + " %", Math.round(100 * s.ambos) + " %",
@@ -693,12 +754,136 @@ if (typeof module !== "undefined") module.exports = Motor;
     var d = r5.pts - tmp.pts;
     return d >= 0.5 ? "↑ en racha (" + signo(d, 2) + " pts/p sobre su media)" : d <= -0.5 ? "↓ en mala racha (" + signo(d, 2) + " pts/p)" : "= en su línea";
   }
+
+  /* --- presupuesto --- */
+  function cfg() {
+    var c = {}; try { c = JSON.parse(localStorage.getItem(CLAVE_CFG) || "{}"); } catch (e) { c = {}; }
+    return { presupuesto: c.presupuesto > 0 ? c.presupuesto : 16, minimo: c.minimo > 0 ? c.minimo : 1 };
+  }
+  function guardarCfg(c) { localStorage.setItem(CLAVE_CFG, JSON.stringify(c)); }
+  function caja() {
+    var c = cfg(), ganado = 0, enJuego = 0;
+    apuestas().forEach(function (e) { if (e.estado === "PENDIENTE") enJuego += e.stake; else if (e.beneficio != null) ganado += e.beneficio; });
+    return { inicial: c.presupuesto, minimo: c.minimo, ganado: ganado, enJuego: enJuego, total: c.presupuesto + ganado, libre: c.presupuesto + ganado - enJuego };
+  }
+  function eur(x) { return num(x, 2) + " €"; }
+
+  /* --- fiabilidad de cada mercado (medida en las temporadas de prueba) --- */
+  var MARGEN = { "Resultado": 0.04, "Goles": 0.05, "Ambos marcan": 0.06, "Córners": 0.10, "Tarjetas": 0.10 };
+  function margenDe(grupo, conMercado) { return (MARGEN[grupo] || 0.06) + (conMercado || grupo === "Córners" || grupo === "Tarjetas" ? 0 : 0.04); }
+  function predecible(grupo) {
+    var T = D.derivados && D.derivados.tabla, clave = { "Resultado": "1x", "Goles": "o25", "Ambos marcan": "btts" }[grupo], m = null;
+    if (T && clave) T.forEach(function (f) { if (f.clave === clave && f.fuentes["Cuotas del partido"]) m = f.fuentes["Cuotas del partido"].mejora; });
+    if (grupo === "Córners") return { t: "muy poco predecible", c: "b" };
+    if (grupo === "Tarjetas") return { t: "poco predecible", c: "b" };
+    if (m == null) return { t: "", c: "" };
+    return m >= 0.06 ? { t: "predecible", c: "a" } : m >= 0.02 ? { t: "algo predecible", c: "m" } : { t: "casi una moneda al aire", c: "b" };
+  }
+  function valorar(p, c, margen) {
+    var ev = p * c - 1, justa = 1 / p, minima = (1 + margen) / p;
+    if (c < justa) return { clase: "mal", ev: ev, minima: minima, txt: "No compensa: la cuota justa es " + num(justa) + " y te dan " + num(c) + ". De media pierdes el " + num(-100 * ev, 1) + " % de lo apostado." };
+    if (c < minima) return { clase: "neutro", ev: ev, minima: minima, txt: "Valor escaso (" + signo(100 * ev, 1) + " %): entra en el margen de error de la estimación. Pide al menos " + num(minima) + "." };
+    return { clase: "bien", ev: ev, minima: minima, txt: "Hay valor: " + signo(100 * ev, 1) + " % de media sobre lo apostado." };
+  }
+  function consejoImporte(p, c, v) {
+    var k = caja(), t = [];
+    if (k.libre < k.minimo) return "No te queda presupuesto libre (" + eur(k.libre) + "). Espera a que se liquiden las apuestas pendientes.";
+    if (v.clase === "mal") t.push("<b>Recomendación: no apostar.</b>");
+    else {
+      var kelly = v.ev / (c - 1), teorico = 0.25 * kelly * k.total, imp = Math.max(k.minimo, Math.floor(teorico));
+      imp = Math.min(imp, Math.max(k.minimo, Math.floor(0.1 * k.total)));
+      t.push("<b>Importe: " + eur(imp) + "</b>" + (imp <= k.minimo ? " (tu mínimo)" : "") + ". El cálculo prudente daría " + eur(Math.max(teorico, 0)) +
+        (teorico < k.minimo ? ": con " + eur(k.total) + " de presupuesto, tu mínimo ya es el " + Math.round(100 * k.minimo / k.total) + " % en cada apuesta. No subas de ahí." : "."));
+    }
+    if (k.enJuego > 0) t.push("Ya tienes " + eur(k.enJuego) + " en juego" + ((k.enJuego + k.minimo) / k.total > 0.3 ? ": con esta superarías el 30 % del presupuesto a la vez, demasiado." : "."));
+    t.push("Probabilidad de perder esta apuesta: " + pct(1 - p, 0) + ".");
+    return t.join(" ");
+  }
+
+  /* --- boleto: una apuesta simple o una combinada --- */
+  function boleto() { try { return JSON.parse(localStorage.getItem(CLAVE_BOL) || "[]"); } catch (e) { return []; } }
+  function guardarBoleto(b) { localStorage.setItem(CLAVE_BOL, JSON.stringify(b)); }
+  function alBoleto(a, s) {
+    var b = boleto(), partido = a.liga + "|" + a.local + "|" + a.visitante;
+    b = b.filter(function (l) { return !(l.partido === partido && l.mercado === s.mercado); });   /* una selección por mercado y partido */
+    b.push({ partido: partido, liga: a.liga, local: a.local, visitante: a.visitante, fecha: a.fecha, grupo: s.grupo, mercado: s.mercado,
+      sel: s.sel, tipo: s.tipo, lado: s.lado, linea: s.linea, p: s.p, lam: a.base.lam, rho: a.base.rho, conMercado: a.base.mercado });
+    guardarBoleto(b);
+  }
+  function pintarBoleto() {
+    var el = $("i-bol"); if (!el) return;
+    var b = boleto(), k = caja(), h = '<div class="card"><h2>🎟️ Tu apuesta</h2>';
+    h += '<p class="sub">Presupuesto: <b>' + eur(k.total) + '</b> · libre ' + eur(k.libre) + (k.enJuego ? ' · en juego ' + eur(k.enJuego) : '') +
+      ' · mínimo ' + eur(k.minimo) + ' <span class="sub">(se cambia en 📝 Diario)</span></p>';
+    if (!b.length) { el.innerHTML = h + '<p class="sub">Pulsa ＋ en una selección del informe para añadirla. Con una selección es una apuesta simple; con varias (de este u otros partidos), una combinada.</p><div id="b-msg"></div></div>'; return; }
+    b.forEach(function (l, i) {
+      h += '<div class="leg"><span><b>' + esc(l.mercado === "1X2" || l.mercado === "Doble oportunidad" ? l.sel : l.mercado + ": " + l.sel) + '</b><br><span class="sub">' +
+        esc(l.local) + ' – ' + esc(l.visitante) + ' · ' + fechaCorta(l.fecha) + ' · ' + pct(l.p, 0) + ' · justa ' + cuota(l.p) + '</span></span>' +
+        '<button class="btn sec peq" data-quitar="' + i + '">✕</button></div>';
+    });
+    var p = Motor.probCombinada(b), n = b.length, margen = 0;
+    b.forEach(function (l) { margen = Math.max(margen, margenDe(l.grupo, l.conMercado)); });
+    margen += 0.02 * (n - 1);
+    var mismos = {}; b.forEach(function (l) { mismos[l.partido] = (mismos[l.partido] || 0) + 1; });
+    var hayMismo = Object.keys(mismos).some(function (x) { return mismos[x] > 1; });
+    if (p <= 1e-9) h += '<p class="error">Estas selecciones no pueden cumplirse a la vez.</p>';
+    else {
+      h += '<div class="kpis"><div><b>' + pct(p, 0) + '</b><span>prob. de acertar' + (n > 1 ? " todo" : "") + '</span></div><div><b>' + cuota(p) +
+        '</b><span>cuota justa</span></div><div><b>' + num((1 + margen) / p) + '</b><span>pide al menos</span></div></div>';
+      if (n > 1) h += '<p class="sub">Combinada de ' + n + ': la casa cobra su margen en cada selección y se multiplica (con un 5 % por selección, ' +
+        'pierdes de media un ' + Math.round(100 * (1 - Math.pow(0.95, n))) + ' %). Solo compensa si la cuota total supera la justa.' +
+        (hayMismo ? ' Las selecciones del mismo partido se han calculado juntas, porque dependen unas de otras.' : '') + '</p>';
+      h += '<div class="fila"><div><label>Cuota que te dan' + (n > 1 ? " (total)" : "") + '</label><input type="number" inputmode="decimal" step="0.01" id="b-cuota" placeholder="' + num((1 + margen) / p) + '"></div>' +
+        '<div><label>Importe (€)</label><input type="number" inputmode="decimal" step="0.5" id="b-stake" value="' + k.minimo + '"></div></div>' +
+        '<div id="b-ver"><p class="sub">Escribe la cuota de tu casa y te digo si compensa y cuánto arriesgar.</p></div>' +
+        '<input type="text" id="b-nota" placeholder="Por qué apuestas (opcional, pero ayuda a aprender)">' +
+        '<button class="btn" id="b-guardar">Guardar en mi diario</button>';
+    }
+    h += '<button class="btn sec" id="b-vaciar">Vaciar</button><div id="b-msg"></div></div>';
+    el.innerHTML = h;
+    Array.prototype.forEach.call(el.querySelectorAll("[data-quitar]"), function (x) {
+      x.onclick = function () { var bb = boleto(); bb.splice(Number(this.dataset.quitar), 1); guardarBoleto(bb); pintarBoleto(); };
+    });
+    $("b-vaciar").onclick = function () { guardarBoleto([]); pintarBoleto(); };
+    if (!$("b-cuota")) return;
+    $("b-cuota").oninput = function () {
+      var c = Number(this.value);
+      if (!(c > 1)) { $("b-ver").innerHTML = ""; return; }
+      var v = valorar(p, c, margen);
+      $("b-ver").innerHTML = '<div class="veredicto ' + v.clase + '">' + v.txt + '<br>' + consejoImporte(p, c, v) + '</div>';
+    };
+    $("b-guardar").onclick = function () {
+      var c = Number($("b-cuota").value), s = Number($("b-stake").value), kk = caja();
+      if (!(c > 1) || !(s > 0)) { $("b-msg").innerHTML = '<p class="error">Pon la cuota (mayor que 1) y el importe.</p>'; return; }
+      if (s > kk.libre + 1e-9) { $("b-msg").innerHTML = '<p class="error">Solo te quedan ' + eur(kk.libre) + ' libres.</p>'; return; }
+      var ap = apuestas(), id = Date.now().toString(36) + Math.random().toString(36).slice(2, 6), ahora = new Date().toISOString().slice(0, 16).replace("T", " ");
+      var legs = b.map(function (l) { return { liga: l.liga, local: l.local, visitante: l.visitante, fecha: l.fecha, mercado: l.mercado, sel: l.sel,
+        tipo: l.tipo, lado: l.lado, linea: l.linea, p: l.p, res: null }; });
+      var fechas = legs.map(function (l) { return l.fecha; }).sort();
+      if (n === 1) { var l = legs[0];
+        ap.push({ id: id, registrado: ahora, fecha: l.fecha, liga: l.liga, local: l.local, visitante: l.visitante, mercado: l.mercado, sel: l.sel, tipo: l.tipo,
+          lado: l.lado, linea: l.linea, cuota: c, stake: s, p_modelo: p, fuente: b[0].conMercado ? "cuotas del partido" : "modelo", nota: $("b-nota").value || "",
+          estado: "PENDIENTE", beneficio: null, resultado: null });
+      } else ap.push({ id: id, registrado: ahora, fecha: fechas[fechas.length - 1], tipo: "COMBI", mercado: "Combinada", sel: n + " selecciones", legs: legs,
+        cuota: c, stake: s, p_modelo: p, nota: $("b-nota").value || "", estado: "PENDIENTE", beneficio: null, resultado: null });
+      guardarApuestas(ap); guardarBoleto([]); pintarBoleto();
+      $("b-msg").innerHTML = '<p class="ok">✅ Guardada. Se liquidará sola en 📝 Diario cuando lleguen los resultados.</p>';
+    };
+  }
+
+  function vistaVars() {
+    return '<div class="card">' + selectores("v") + '<button class="btn" id="v-ir">Hacer informe</button></div><div id="v-res"></div><div id="i-bol"></div>';
+  }
+  function enlaceBusqueda(texto, q) {
+    return '<a href="https://www.google.com/search?q=' + encodeURIComponent(q) + '" target="_blank" rel="noopener">' + esc(texto) + '</a>';
+  }
   function pintarVars() {
     var a;
     try { a = analisis(st.liga, st.local, st.visitante); } catch (e) { $("v-res").innerHTML = '<div class="card error">⚠️ ' + esc(e.message) + '</div>'; return; }
     st.a = a;
     var L = ligaDe(a.liga), temp = L.temporada, fecha = a.fecha, h = "", senales = [];
-    var equipos = [[a.local, true], [a.visitante, false]], info = {};
+    var equipos = [[a.local, true], [a.visitante, false]], info = {}, S = a.selecciones, fx = a.fixture;
+    var mer = a.fuentes["Mercado (cuotas)"], fp = a.fuentes[a.principal], con = a.base.mercado;
     equipos.forEach(function (t) {
       var todos = partidosEquipo(a.liga, t[0]).filter(function (x) { return x.fecha < fecha; });
       var tmp = todos.filter(function (x) { return x.temp === temp; });
@@ -706,7 +891,46 @@ if (typeof module !== "undefined") module.exports = Motor;
         hist: stats(todos), rend: rendimiento(a.liga, t[0], fecha, 5), desc: Motor.descanso(D, a.liga, t[0], fecha),
         ultimo: Motor.ultimoAntes(D, a.liga, t[0], fecha), marcaje: marcajeCasaFuera(a.liga, t[0], t[1], fecha) };
     });
-    /* --- señales --- */
+
+    /* ===== 1. resumen ===== */
+    var p3 = [S[0].p, S[1].p, S[2].p], kf = p3[0] >= p3[2] ? 0 : 2, total = a.base.lam[0] + a.base.lam[1], res = [];
+    var nomF = kf === 0 ? a.local : a.visitante;
+    res.push(p3[kf] >= 0.6 ? "<b>" + esc(nomF) + "</b> es claro favorito (" + pct(p3[kf], 0) + ")." :
+      p3[kf] >= 0.45 ? "<b>" + esc(nomF) + "</b> es favorito, sin ser seguro (" + pct(p3[kf], 0) + "; empate " + pct(p3[1], 0) + ")." :
+      "Partido igualado: " + esc(a.local) + " " + pct(p3[0], 0) + ", empate " + pct(p3[1], 0) + ", " + esc(a.visitante) + " " + pct(p3[2], 0) + ".");
+    res.push("Se esperan <b>" + num(total, 1) + " goles</b> (" + num(a.base.lam[0], 1) + " – " + num(a.base.lam[1], 1) + "): partido " +
+      (total < 2.35 ? "cerrado" : total > 2.9 ? "abierto" : "de goles normales") + ". Ambos marcan: " + pct(a.marca.pb, 0) + ".");
+    var seguras = S.filter(function (s) { return ["Resultado", "Goles", "Ambos marcan"].indexOf(s.grupo) >= 0 && s.p >= 0.62; })
+      .sort(function (x, y) { return y.p - x.p; }).slice(0, 3);
+    if (seguras.length) res.push("Lo más probable: " + seguras.map(function (s) { return esc(s.mercado === "Goles" ? s.sel + " goles" : s.mercado === "Ambos marcan" ? "Ambos marcan: " + s.sel : s.sel) +
+      " (" + pct(s.p, 0) + ", cuota justa " + cuota(s.p) + ")"; }).join("; ") + ".");
+    h += '<div class="card"><h2>' + esc(a.local) + ' – ' + esc(a.visitante) + '</h2><p class="sub">' + esc(L.nombre) + ' · ' + fechaLarga(fecha) +
+      (fx && fx.hora ? ' · ' + esc(fx.hora) : '') + '</p>';
+    a.avisos.forEach(function (x) { h += '<p class="aviso">⚠️ ' + esc(x) + '</p>'; });
+    h += '<ul class="senales">' + res.map(function (s) { return '<li>' + s + '</li>'; }).join("") + '</ul>';
+    h += '<p class="sub">' + (con ? "Base: las cuotas del propio partido sin el margen de la casa (Pinnacle o media del mercado). Es la mejor estimación que existe: en la prueba supera a cualquier modelo."
+      : "⚠️ Sin cuotas cargadas para este partido: la base es el " + esc(a.base.fuente.toLowerCase()) + ", menos fiable. Las cuotas mínimas llevan un margen de seguridad mayor.") + '</p></div>';
+
+    /* ===== 2. mercados ===== */
+    h += '<div class="card"><h2>Qué apostar y desde qué cuota</h2><p class="sub">"Pide ≥" = cuota mínima que debe darte tu casa (la justa más un margen de seguridad). Si paga menos, no apuestes. ＋ lo añade a tu apuesta.</p>';
+    ["Resultado", "Goles", "Ambos marcan", "Córners", "Tarjetas"].forEach(function (g) {
+      var filas = [];
+      S.forEach(function (s, k) {
+        if (s.grupo !== g) return;
+        var m = margenDe(g, con), b = "";
+        if (s.b365) { var ev = s.p * s.b365 - 1, vale = ev >= 0.02 && s.b365 <= 4; b = '<br><span class="' + (vale ? "ok" : "sub") + '">Bet365 ' + num(s.b365) + (vale ? " ✅ " : " · ") + signo(100 * ev, 0) + ' %</span>'; }
+        filas.push([esc(s.sel) + b, pct(s.p, 0), "<b>" + num((1 + m) / s.p) + "</b>", '<button class="mas" data-add="' + k + '">＋</button>']);
+      });
+      if (!filas.length) return;
+      var pr = predecible(g);
+      h += '<div class="grupo-t">' + g + (pr.t ? ' <span class="pill ' + pr.c + '">' + pr.t + '</span>' : '') + '</div>' +
+        '<div class="selt">' + tabla(["", "Prob.", "Pide ≥", ""], filas) + '</div>';
+      if (g === "Tarjetas") h += infoArbitro(a);
+    });
+    h += '<p class="sub">Bet365 = cuota del día en que el robot actualizó (puede haber cambiado) y su valor frente a la cuota justa. ' +
+      'Más probable no es más rentable: una selección al 85 % con cuota 1.12 pierde dinero igual que cualquier otra mal pagada.</p></div>';
+
+    /* ===== 3. factores ===== */
     equipos.forEach(function (t) {
       var I = info[t[0]];
       var rd = I.rend, mas = function (x, v1, v2) { return Math.abs(x) < 0.5 ? "lo esperado" : num(Math.abs(x), 1) + " " + (x > 0 ? v1 : v2) + " de lo esperado"; };
@@ -716,128 +940,88 @@ if (typeof module !== "undefined") module.exports = Motor;
     var dl = info[a.local].desc, dv = info[a.visitante].desc;
     if (Math.abs(dl - dv) >= 3 || Math.min(dl, dv) <= 3)
       senales.push("Descanso desigual o corto: " + esc(a.local) + " " + Math.round(dl) + " días, " + esc(a.visitante) + " " + Math.round(dv) + " días.");
-    var mer = a.fuentes["Mercado (cuotas)"], fp = a.fuentes[a.principal];
     if (mer) {
       var k = 0; fp.p.forEach(function (x, i) { if (Math.abs(x - mer.p[i]) > Math.abs(fp.p[k] - mer.p[k])) k = i; });
       var dd = 100 * (fp.p[k] - mer.p[k]);
-      senales.push("Modelo frente al mercado: mayor diferencia en <b>" + ["Local", "Empate", "Visitante"][k] + "</b> (" + signo(dd, 1) + " pp)" +
-        (Math.abs(dd) >= 5 ? ". Grande: busca qué sabe el mercado (bajas, rotaciones)." : ", pequeña."));
-    } else senales.push("Sin cuotas para este partido: no hay comparación con el mercado.");
-    var R = reglaBtts(), u = R ? R.umbral : 0.62, m = a.marca;
-    var cumple = m.pl > u && m.pv > u;
-    senales.push("Regla Ambos marcan (" + Math.round(100 * u) + " %): " + (cumple ? "<b>se cumple</b>" : "no se cumple") +
-      " (local " + pct(m.pl, 0) + ", visitante " + pct(m.pv, 0) + "). P(ambos marcan) " + pct(m.pb, 0) + " → cuota justa " + cuota(m.pb) + ".");
-    h += '<div class="card"><h2>' + esc(a.local) + ' – ' + esc(a.visitante) + '</h2><p class="sub">' + esc(L.nombre) + ' · ' + fechaLarga(fecha) +
-      (a.fixture && a.fixture.hora ? ' · ' + esc(a.fixture.hora) : '') + '</p>';
-    a.avisos.forEach(function (x) { h += '<p class="aviso">⚠️ ' + esc(x) + '</p>'; });
-    h += '<h3>Señales</h3><ul class="senales">' + senales.map(function (s) { return '<li>' + s + '</li>'; }).join("") + '</ul></div>';
-    /* --- forma --- */
-    h += '<div class="card"><h2>Forma: reciente frente a su media</h2>';
+      senales.push("Nuestro modelo frente al mercado: mayor diferencia en <b>" + ["Local", "Empate", "Visitante"][k] + "</b> (" + signo(dd, 1) + " pp)" +
+        (Math.abs(dd) >= 5 ? ". Es grande: lo normal es que el mercado sepa algo que el modelo no ve (bajas, rotaciones). No es una oportunidad." : ", pequeña: coinciden."));
+      if (fx && fx.mer_ini && fx.mer_ini_fecha && fx.mer_ini_fecha < D.hoy_datos) {
+        var km = 0; fx.mer1x2.forEach(function (x, i) { if (Math.abs(x - fx.mer_ini[i]) > Math.abs(fx.mer1x2[km] - fx.mer_ini[km])) km = i; });
+        var mv = 100 * (fx.mer1x2[km] - fx.mer_ini[km]);
+        if (Math.abs(mv) >= 1.5) senales.push("La cuota se ha movido desde el " + fechaCorta(fx.mer_ini_fecha) + ": <b>" + ["Local", "Empate", "Visitante"][km] + " " + signo(mv, 1) +
+          " pp</b>. Un movimiento así suele deberse a noticias (bajas, alineación): averigua cuál.");
+      }
+    }
+    h += '<div class="card"><h2>Factores a tener en cuenta</h2><ul class="senales">' + senales.map(function (s) { return '<li>' + s + '</li>'; }).join("") + '</ul>' +
+      '<p class="sub">' + (con ? "La forma, el descanso y los tiros ya están dentro de la cuota: en la prueba no mejoran la predicción (ver ✅ Fiable). Úsalos para entender el partido, no para corregir las probabilidades."
+        : "Sin cuotas, estos factores pesan más: el modelo no ve bajas ni rotaciones.") + '</p></div>';
+
+    /* ===== 4. comprobaciones ===== */
+    var q = a.local + " " + a.visitante, chk = [];
+    chk.push("<b>Bajas y alineaciones</b>: es lo que más mueve un partido y los datos no lo ven. " + enlaceBusqueda("Buscar alineaciones probables", "alineaciones probables " + q) +
+      " · " + enlaceBusqueda("bajas y lesionados", "bajas lesionados sancionados " + q));
+    chk.push("<b>Partidos entre semana</b>: ¿alguno jugó Copa o competición europea hace 3-4 días, o la juega después? Los datos solo ven la liga.");
+    chk.push("<b>Qué se juega cada uno</b>: descenso, Europa, nada. Pesa sobre todo en las últimas jornadas.");
+    chk.push("<b>Compara la cuota</b> en dos o tres casas antes de apostar: es la única ventaja segura que tienes.");
+    if (!con) chk.push("<b>Este partido no tiene cuotas cargadas</b>: mira la cuota del 1X2 en tu casa. Si difiere mucho de la probabilidad de arriba, fíate de la cuota.");
+    h += '<div class="card"><h2>Comprueba antes de apostar</h2><ul class="senales">' + chk.map(function (s) { return '<li>' + s + '</li>'; }).join("") + '</ul></div>';
+
+    /* ===== 5. detalle ===== */
+    h += '<div class="card"><h2>Datos de apoyo</h2>';
+    h += '<details><summary>Forma: reciente frente a su media</summary>';
     equipos.forEach(function (t) {
       var I = info[t[0]];
       h += '<h3>' + esc(t[0]) + ' <span class="sub">' + tendencia(I.r5, I.tmp) + '</span></h3>' +
         tabla(["", "PJ", "Pts/p", "GF/p", "GC/p", "Marca", "Ambos", "Córners f/c", "Tarjetas"],
           [filaForma("Últimos 5", I.r5), filaForma("Temporada", I.tmp), filaForma(t[1] ? "En casa" : "Fuera", I.lado), filaForma("3 temp.", I.hist)]);
     });
-    h += '<p class="sub">Una racha de 5 partidos es poca muestra. Pesa más si coincide con un cambio real (lesión, entrenador) o con el calendario de abajo.</p></div>';
-    /* --- calendario --- */
-    h += '<div class="card"><h2>Rivales recientes y rendimiento</h2>';
+    h += '<p class="sub">Una racha de 5 partidos es poca muestra.</p></details>';
+    h += '<details><summary>Rivales recientes y rendimiento</summary>';
     equipos.forEach(function (t) {
       var R5 = info[t[0]].rend;
       h += '<h3>' + esc(t[0]) + ' <span class="sub">rivales ' + R5.dificultad + (R5.rango_medio ? ' (puesto medio ' + num(R5.rango_medio, 1) + ' de ' + R5.n_eq + ')' : '') + '</span></h3>' +
         tabla(["Fecha", "Rival (fuerza)", "Res.", "Esperado", "Dif."], R5.filas);
     });
-    h += '<p class="sub">"Esperado" = goles que tocaban según la fuerza actual de cada equipo. Dif. positiva = rindió por encima (o tuvo suerte). ' +
-      'Fuerza = puesto según el rating de mercado.</p></div>';
-    /* --- descanso --- */
-    h += '<div class="card"><h2>Descanso</h2>' + tabla(["Equipo", "Último partido", "Días"], equipos.map(function (t) {
-      var I = info[t[0]]; return [esc(t[0]), I.ultimo ? fechaCorta(I.ultimo) : "—", Math.round(I.desc)]; }));
-    if (D.datos_hasta < fecha && diasEntre(D.datos_hasta, fecha) > 3) h += '<p class="sub">Los resultados llegan hasta el ' + fechaCorta(D.datos_hasta) +
-      '. Si un equipo jugó Copa o competición europea entre medias, no aparece aquí (football-data solo trae liga).</p>';
-    h += '</div>';
-    /* --- mercado --- */
-    h += '<div class="card"><h2>Mercado</h2>';
+    h += '<p class="sub">"Esperado" = goles que tocaban según la fuerza actual de cada equipo. Dif. positiva = rindió por encima (o tuvo suerte).</p></details>';
+    h += '<details><summary>Descanso</summary>' + tabla(["Equipo", "Último partido", "Días"], equipos.map(function (t) {
+      var I = info[t[0]]; return [esc(t[0]), I.ultimo ? fechaCorta(I.ultimo) : "—", Math.round(I.desc)]; })) +
+      '<p class="sub">Solo cuenta partidos de liga' + (D.datos_hasta < fecha ? '; resultados hasta el ' + fechaCorta(D.datos_hasta) : '') + '.</p></details>';
     if (mer && mer.b365) {
       var marg = mer.b365.reduce(function (s, c) { return s + 1 / c; }, 0) - 1;
-      h += tabla(["", "Bet365", "Implícita", "Sin margen", "Modelo", "Dif. pp"], ["Local", "Empate", "Visitante"].map(function (s, k) {
-        return [s, num(mer.b365[k]), pct(1 / mer.b365[k]), pct(mer.p[k]), pct(fp.p[k]), signo(100 * (fp.p[k] - mer.p[k]), 1)]; }));
-      if (mer.b365ou && fp.ov != null && mer.ov != null) h += tabla(["", "Bet365", "Implícita", "Sin margen", "Modelo", "Dif. pp"],
-        [["Más de 2.5", 0, mer.ov, fp.ov], ["Menos de 2.5", 1, 1 - mer.ov, 1 - fp.ov]].map(function (r) {
-          return [r[0], num(mer.b365ou[r[1]]), pct(1 / mer.b365ou[r[1]]), pct(r[2]), pct(r[3]), signo(100 * (r[3] - r[2]), 1)]; }));
-      h += '<p class="sub">Modelo = ' + esc(a.principal) + '. Margen de Bet365 en el 1X2: ' + pct(marg) + '. "Sin margen" = consenso del mercado (Pinnacle o media de casas), lo más fiable que hay.</p>';
-    } else h += '<p class="sub">Sin cuotas para este cruce (solo se cargan las de la jornada en curso).</p>';
-    h += '</div>';
-    /* --- ambos marcan --- */
+      h += '<details><summary>Mercado frente a nuestro modelo</summary>' + tabla(["", "Bet365", "Sin margen", "Modelo", "Dif. pp"], ["Local", "Empate", "Visitante"].map(function (s, k) {
+        return [s, num(mer.b365[k]), pct(mer.p[k]), pct(fp.p[k]), signo(100 * (fp.p[k] - mer.p[k]), 1)]; })) +
+        '<p class="sub">Modelo = ' + esc(a.principal) + '. Margen de Bet365 en el 1X2: ' + pct(marg) + '.</p></details>';
+    }
+    var R = reglaBtts(), u = R ? R.umbral : 0.62, m = a.marca, cumple = m.pl > u && m.pv > u;
     var mc = [info[a.local].marcaje, info[a.visitante].marcaje], cumpleCF = mc[0].p != null && mc[1].p != null && mc[0].p > u && mc[1].p > u;
     var fm = function (x) { return x.p == null ? "— (" + x.n + " PJ)" : pct(x.p, 0) + " (" + x.n + " PJ)"; };
-    h += '<div class="card"><h2>Ambos marcan</h2>' + tabla(["Prob. de marcar", "Modelo", "Temporada"], [
+    h += '<details><summary>Tu regla de Ambos marcan (' + Math.round(100 * u) + ' %)</summary>' + tabla(["Prob. de marcar", "Estimación", "Temporada"], [
       [esc(a.local) + ' <span class="sub">en casa</span>', pct(m.pl, 0), fm(mc[0])],
       [esc(a.visitante) + ' <span class="sub">fuera</span>', pct(m.pv, 0), fm(mc[1])],
-      ["¿Regla del " + Math.round(100 * u) + " %?", cumple ? "✅ sí" : "✖ no", cumpleCF ? "✅ sí" : "✖ no"]]);
-    h += '<p>P(ambos marcan) según el modelo: <b>' + pct(m.pb) + '</b> → cuota justa <b>' + cuota(m.pb) + '</b>.</p>';
-    if (R && R.prueba && R.prueba.n) h += '<p class="sub">Tu regla, en las temporadas de prueba (' + R.B.prueba.join(", ") + '): se cumplió en ' + R.prueba.n +
-      ' partidos y acertó el ' + pct(R.prueba.acierto) + '. Para no perder hacía falta una cuota media de al menos <b>' + num(R.prueba.cuota_min) +
-      '</b> (IC 95 %: ' + num(R.prueba.cuota_min_lo) + '–' + num(R.prueba.cuota_min_hi) + ').</p>';
-    h += '<label>Cuota que te ofrecen a "Ambos marcan: Sí"</label><input type="number" inputmode="decimal" step="0.01" id="v-btts-c" placeholder="p. ej. 1.75">' +
-      '<div id="v-btts-r"></div><p class="sub">Modelo = rating de mercado, la misma estimación con la que se ha hecho el backtest.</p></div>';
-    /* --- córners y tarjetas --- */
-    h += bloqueConteos(a);
-    /* --- registrar apuesta --- */
-    st.ops = opcionesApuesta(a);
-    var iBtts = 0; st.ops.forEach(function (o, k) { if (o.tipo === "BTTS" && o.lado === 1) iBtts = k; });
-    h += '<div class="card"><h2>Registrar apuesta</h2><label>Mercado</label><select id="v-op">' + st.ops.map(function (o, k) {
-      return '<option value="' + k + '"' + (k === iBtts ? " selected" : "") + '>' + esc(o.mercado + " · " + o.sel) + '</option>'; }).join("") + '</select>' +
-      '<div class="fila"><div><label>Cuota real</label><input type="number" inputmode="decimal" step="0.01" id="v-cuota" placeholder="1.80"></div>' +
-      '<div><label>Importe (€)</label><input type="number" inputmode="decimal" step="0.5" id="v-stake" placeholder="5"></div></div>' +
-      '<div id="v-ev"></div><input type="text" id="v-nota" placeholder="Por qué (recomendado)">' +
-      '<button class="btn" id="v-guardar">Guardar en mi diario</button><div id="v-msg"></div>' +
-      '<p class="sub">Apunta la cuota que de verdad cogiste. Es la única forma de saber si tus apuestas ganan dinero: football-data no tiene cuotas de Ambos marcan, córners ni tarjetas.</p></div>';
+      ["¿Se cumple?", cumple ? "✅ sí" : "✖ no", cumpleCF ? "✅ sí" : "✖ no"]]) +
+      '<p class="sub">Que se cumpla no basta: lo que importa es que la cuota supere ' + num((1 + margenDe("Ambos marcan", con)) / m.pb) + '.' +
+      (R && R.prueba && R.prueba.n ? ' En la prueba, la regla acertó el ' + pct(R.prueba.acierto) + ' (cuota mínima media ' + num(R.prueba.cuota_min) + ').' : '') + '</p></details>';
+    h += '</div>';
     $("v-res").innerHTML = h;
-    var verEv = function () {
-      var o = st.ops[Number($("v-op").value)], c = Number($("v-cuota").value);
-      var t = 'Prob. (' + esc(o.fuente) + '): <b>' + pct(o.p) + '</b> → cuota justa <b>' + cuota(o.p) + '</b>';
-      if (c > 1) { var ev = o.p * c - 1; t += '. Con ' + num(c) + ': valor esperado <b class="' + (ev > 0 ? "ok" : "error") + '">' + signo(100 * ev, 1) + ' %</b>'; }
-      $("v-ev").innerHTML = '<p>' + t + '.</p>';
-    };
-    $("v-op").onchange = verEv; $("v-cuota").oninput = verEv; verEv();
-    $("v-btts-c").oninput = function () {
-      var c = Number(this.value), r = "";
-      if (c > 1) {
-        var ev = m.pb * c - 1, cm = R && R.prueba && R.prueba.cuota_min, clase = "neutro", txt = [];
-        txt.push("Valor esperado según el modelo: <b>" + signo(100 * ev, 1) + " %</b>.");
-        if (cm) txt.push(c < cm ? "Por debajo de la cuota mínima histórica de tu regla (" + num(cm) + "): a la larga, apostar así pierde."
-          : "Por encima de la cuota mínima histórica de tu regla (" + num(cm) + ").");
-        if (ev > 0.02 && (!cm || c >= cm)) clase = "bien"; else if (ev < 0 || (cm && c < cm)) clase = "mal";
-        r = '<div class="veredicto ' + clase + '">' + txt.join(" ") + '</div>';
-        $("v-cuota").value = c; $("v-op").value = iBtts; verEv();
-      }
-      $("v-btts-r").innerHTML = r;
-    };
-    $("v-guardar").onclick = function () {
-      var o = st.ops[Number($("v-op").value)], c = Number($("v-cuota").value), s = Number($("v-stake").value);
-      if (!(c > 1) || !(s > 0)) { $("v-msg").innerHTML = '<p class="error">Pon la cuota (mayor que 1) y el importe.</p>'; return; }
-      var ap = apuestas();
-      ap.push({ id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6), registrado: new Date().toISOString().slice(0, 16).replace("T", " "),
-        fecha: a.fecha, liga: a.liga, local: a.local, visitante: a.visitante, mercado: o.mercado, sel: o.sel, tipo: o.tipo, lado: o.lado,
-        linea: o.linea, cuota: c, stake: s, p_modelo: o.p, fuente: o.fuente, nota: $("v-nota").value || "", estado: "PENDIENTE", beneficio: null, resultado: null });
-      guardarApuestas(ap);
-      $("v-msg").innerHTML = '<p class="ok">✅ Apuesta guardada. La verás en 📝 Diario y se liquidará sola.</p>';
-    };
+    Array.prototype.forEach.call(document.querySelectorAll("[data-add]"), function (b) {
+      b.onclick = function () { alBoleto(a, S[Number(this.dataset.add)]); pintarBoleto(); this.textContent = "✓"; };
+    });
   }
   function engancharVars(auto) {
     engancharSelectores("v", function (reset) { ir("vars", !reset); });
     $("v-ir").onclick = function () { st.local = $("v-loc").value; st.visitante = $("v-vis").value; pintarVars(); };
     if (auto) pintarVars();
+    pintarBoleto();
   }
 
   /* ---------- laboratorio ---------- */
   function cargarLab(a) {
-    st.labA = a; var lam = a.fuentes[a.principal].lam;
-    st.lab.ll = lam[0]; st.lab.lv = lam[1]; st.lab.rho = D.parametros.rho_goles;
+    st.labA = a; var lam = a.base.lam;
+    st.lab.ll = lam[0]; st.lab.lv = lam[1]; st.lab.rho = a.base.rho;
   }
   function vistaLab() {
     var a = st.labA, h = '<div class="card">' + selectores("l") + '<button class="btn" id="l-cargar">Cargar partido</button>' +
-      '<p class="sub">Parte del modelo de mercado y mueve los goles esperados solo si tienes un motivo concreto (bajas, rotación, calendario).</p></div>';
+      '<p class="sub">Parte de la base del informe y mueve los goles esperados solo si tienes un motivo concreto (una baja importante, rotación). Verás cómo cambian todas las cuotas justas.</p></div>';
     h += '<div class="card">' + rango("l-ll", "Goles esperados " + (a ? esc(a.local) : "local"), st.lab.ll, 0.2, 4, 0.01) +
       rango("l-lv", "Goles esperados " + (a ? esc(a.visitante) : "visitante"), st.lab.lv, 0.2, 4, 0.01) +
       rango("l-rho", "Ajuste de empates (más negativo = menos 0-0 y 1-1)", st.lab.rho, -0.25, 0.05, 0.01);
@@ -940,6 +1124,7 @@ if (typeof module !== "undefined") module.exports = Motor;
   function resolverApuesta(ap, p) {
     var gl = p[4], gv = p[5], tot;
     if (ap.tipo === "1X2") return ap.lado === (gl > gv ? 0 : gl === gv ? 1 : 2);
+    if (ap.tipo === "DO") return ap.lado === 0 ? gl >= gv : ap.lado === 1 ? gl !== gv : gl <= gv;
     if (ap.tipo === "BTTS") return ap.lado === 1 ? (gl > 0 && gv > 0) : !(gl > 0 && gv > 0);
     if (ap.tipo === "GOL") tot = gl + gv;
     else if (ap.tipo === "COR") tot = p[9] == null || p[10] == null ? null : p[9] + p[10];
@@ -947,26 +1132,49 @@ if (typeof module !== "undefined") module.exports = Motor;
     if (tot == null) return null;
     return ap.lado === 1 ? tot > ap.linea : tot < ap.linea;
   }
+  function partidoJugado(e) {
+    for (var k = 0; k < D.partidos.length; k++) {
+      var p = D.partidos[k];
+      if (p[0] === e.liga && p[2] === e.local && p[3] === e.visitante && Math.abs(Date.parse(p[1]) - Date.parse(e.fecha)) <= 3 * 864e5) return p;
+    }
+    return null;
+  }
   function liquidarApuestas() {
+    if (!D) return 0;
     var d = apuestas(), n = 0;
     d.forEach(function (e) {
       if (e.estado !== "PENDIENTE") return;
-      for (var k = 0; k < D.partidos.length; k++) {
-        var p = D.partidos[k];
-        if (p[0] === e.liga && p[2] === e.local && p[3] === e.visitante && Math.abs(Date.parse(p[1]) - Date.parse(e.fecha)) <= 3 * 864e5) {
-          var g = resolverApuesta(e, p);
-          if (g === null) break;
-          e.estado = g ? "GANADA" : "PERDIDA"; e.beneficio = g ? e.stake * (e.cuota - 1) : -e.stake; e.resultado = p[4] + "-" + p[5];
-          n++; break;
-        }
+      var g = null;
+      if (e.tipo === "COMBI") {
+        var falla = false, todas = true;
+        e.legs.forEach(function (l) {
+          if (l.res == null) { var p = partidoJugado(l), r = p ? resolverApuesta(l, p) : null; if (r !== null) { l.res = r; l.resultado = p[4] + "-" + p[5]; } }
+          if (l.res === false) falla = true; if (l.res == null) todas = false;
+        });
+        if (falla) g = false; else if (todas) g = true;
+        if (g !== null) e.resultado = e.legs.filter(function (l) { return l.res; }).length + "/" + e.legs.length;
+      } else {
+        var p = partidoJugado(e);
+        if (p) { g = resolverApuesta(e, p); if (g !== null) e.resultado = p[4] + "-" + p[5]; }
       }
+      if (g === null) return;
+      e.estado = g ? "GANADA" : "PERDIDA"; e.beneficio = g ? e.stake * (e.cuota - 1) : -e.stake; n++;
     });
-    if (n) guardarApuestas(d);
+    guardarApuestas(d);
     return n;
+  }
+  function bloquePresupuesto() {
+    var k = caja();
+    return '<div class="card"><h2>Presupuesto</h2><div class="kpis"><div><b>' + eur(k.total) + '</b><span>ahora (' + signo(k.ganado, 2) + ' € desde el inicio)</span></div>' +
+      '<div><b>' + eur(k.enJuego) + '</b><span>en juego</span></div><div><b>' + eur(k.libre) + '</b><span>libre</span></div></div>' +
+      '<div class="fila"><div><label>Presupuesto inicial (€)</label><input type="number" inputmode="decimal" step="1" id="c-pres" value="' + k.inicial + '"></div>' +
+      '<div><label>Apuesta mínima (€)</label><input type="number" inputmode="decimal" step="0.5" id="c-min" value="' + k.minimo + '"></div></div>' +
+      '<p class="sub">Con ' + eur(k.total) + ' y apuestas de ' + eur(k.minimo) + ' tienes margen para unas ' + Math.floor(k.total / k.minimo) +
+      ' apuestas perdidas seguidas. Rachas de 5 o 6 fallos son normales incluso apostando bien: no subas el importe para recuperar.</p></div>';
   }
   function bloqueApuestas() {
     var d = apuestas(), liq = d.filter(function (e) { return e.estado === "GANADA" || e.estado === "PERDIDA"; }), h = '<div class="card"><h2>Mis apuestas</h2>';
-    if (!d.length) return h + '<p class="sub">Aún no hay apuestas. Regístralas en 📊 Variables, con la cuota que de verdad cogiste.</p></div>';
+    if (!d.length) return h + '<p class="sub">Aún no hay apuestas. Regístralas desde 📋 Informe, con la cuota que de verdad cogiste.</p></div>';
     if (liq.length) {
       var apost = 0, ben = 0, gan = 0, pm = 0, pi = 0, r = [];
       liq.forEach(function (e) { apost += e.stake; ben += e.beneficio; if (e.estado === "GANADA") gan++; pm += e.p_modelo; pi += 1 / e.cuota;
@@ -986,7 +1194,10 @@ if (typeof module !== "undefined") module.exports = Motor;
         return [esc(k), x.n, pct(x.g / x.n, 0), signo(x.b, 2) + " €", signo(100 * x.b / x.st, 1) + " %"]; }));
     }
     h += '<h3>Detalle</h3>' + tabla(["Fecha", "Partido", "Apuesta", "Cuota", "€", "Resultado", ""], d.slice().reverse().map(function (e) {
-      return [fechaCorta(e.fecha), esc(e.local) + " – " + esc(e.visitante), esc(e.mercado + " · " + e.sel), num(e.cuota), num(e.stake, 2),
+      var quien = e.tipo === "COMBI" ? "Combinada" : esc(e.local) + " – " + esc(e.visitante);
+      var que = e.tipo === "COMBI" ? e.legs.map(function (l) { return (l.res === true ? "✅ " : l.res === false ? "❌ " : "· ") + esc(l.local + "–" + l.visitante + ": " + (l.mercado === "1X2" || l.mercado === "Doble oportunidad" ? "" : l.mercado + " ") + l.sel); }).join("<br>")
+        : esc(e.mercado + " · " + e.sel);
+      return [fechaCorta(e.fecha), quien, que, num(e.cuota), num(e.stake, 2),
         e.estado === "PENDIENTE" ? '<span class="sub">pendiente</span>' : e.resultado + ' <span class="' + (e.estado === "GANADA" ? "ok" : "error") + '">' + signo(e.beneficio, 2) + '</span>',
         '<button class="btn sec peq" data-borrar-ap="' + esc(e.id) + '">✕</button>'];
     }));
@@ -1040,10 +1251,10 @@ if (typeof module !== "undefined") module.exports = Motor;
     if (total >= 5 && (!ultima || diasEntre(ultima, hoyLocal()) > 30))
       h += '<div class="card veredicto neutro">💾 ' + (ultima ? "Tu última copia es del " + fechaCorta(ultima) : "Nunca has hecho copia") +
         '. Pulsa "Exportar" abajo y guárdala en Archivos o iCloud.</div>';
-    h += bloqueApuestas();
+    h += bloquePresupuesto() + bloqueApuestas();
     h += '<div class="card"><h2>Mis pronósticos</h2><p class="sub">' + d.length + ' pronósticos · ' + liq.length + ' liquidados' +
       (n ? ' (' + n + ' liquidados ahora)' : '') + '. Se liquidan solos cuando el robot trae los resultados.</p>' +
-      '<p class="sub">Para registrar: 🔍 Partido → 🎛️ Laboratorio → Guardar. Registra también los partidos en los que coincides con el modelo, no solo los dudosos.</p></div>';
+      '<p class="sub">Opcional, para medir si tu criterio mejora al mercado: 🎛️ Lab → mueve los goles esperados → Guardar.</p></div>';
     if (liq.length) {
       var fuentes = [["Tú", "mi"], ["Modelo de goles", "mod"], ["Modelo de mercado", "mm"], ["Mercado (cuotas)", "mer"]], filas = [];
       fuentes.forEach(function (f) { var r = puntuar(liq, f[1]); if (r) filas.push([f[0], r.n, r.ll.toFixed(4), r.br.toFixed(4), Math.round(100 * r.ac) + " %"]); });
@@ -1096,8 +1307,11 @@ if (typeof module !== "undefined") module.exports = Motor;
         var id = this.dataset.borrarAp; guardarApuestas(apuestas().filter(function (e) { return e.id !== id; })); ir("diario");
       };
     });
+    [["c-pres", "presupuesto"], ["c-min", "minimo"]].forEach(function (x) {
+      $(x[0]).onchange = function () { var c = cfg(), v = Number(this.value); if (v > 0) { c[x[1]] = v; guardarCfg(c); ir("diario"); } };
+    });
     $("d-exp").onclick = function () {
-      var datos = { version: 2, exportado: hoyLocal(), pronosticos: diario(), apuestas: apuestas() };
+      var datos = { version: 3, exportado: hoyLocal(), pronosticos: diario(), apuestas: apuestas(), cfg: cfg() };
       var blob = new Blob([JSON.stringify(datos, null, 1)], { type: "application/json" }), a = document.createElement("a");
       a.href = URL.createObjectURL(blob); a.download = "diario_futbol_" + hoyLocal() + ".json"; document.body.appendChild(a); a.click(); a.remove();
       localStorage.setItem(CLAVE_COPIA, hoyLocal());
@@ -1116,6 +1330,7 @@ if (typeof module !== "undefined") module.exports = Motor;
           };
           var d = diario(), ap = apuestas(), n1 = mezclar(d, pron), n2 = mezclar(ap, aps);
           guardarDiario(d); guardarApuestas(ap);
+          if (x.cfg && x.cfg.presupuesto > 0) guardarCfg(x.cfg);
           $("d-msg").innerHTML = '<p class="ok">Importados ' + n1 + ' pronósticos y ' + n2 + ' apuestas.</p>'; setTimeout(function () { ir("diario"); }, 900);
         } catch (e) { $("d-msg").innerHTML = '<p class="error">No se pudo importar: ' + esc(e.message) + '</p>'; }
       };
@@ -1131,7 +1346,7 @@ if (typeof module !== "undefined") module.exports = Motor;
       var info = D.modelo.info || {}, test = [].concat(info.test || []);
       h += '<p class="sub">Temporadas de prueba: ' + test.map(nomTemp).join(" y ") + ' (no se usaron para entrenar). Se compara con el <b>mercado de cierre</b> ' +
         'en los mismos partidos. Diferencia de log loss: positiva = peor que el cierre; si el intervalo no incluye el 0, la diferencia es real y no suerte.</p>' +
-        '<p>Estimación principal de la app: <b>' + esc(D.modelo.principal || "Modelo de mercado") + '</b> (la que mejor predice el 1X2 en la prueba).</p>';
+        '<p>Estimación principal de la app: <b>' + esc(D.modelo.principal || "Modelo de mercado") + '</b> (la que mejor predice el 1X2 en la prueba). Se usa cuando un partido no tiene cuotas.</p>';
       ["1X2", "Más/Menos 2.5"].forEach(function (m) {
         var f = D.modelo.metricas.filter(function (r) { return r.mercado === m; });
         if (!f.length) return;
@@ -1147,6 +1362,31 @@ if (typeof module !== "undefined") module.exports = Motor;
         'Si la apertura sale con menos partidos (entre paréntesis), es porque en algunas ligas no hay cuotas de apertura; su diferencia se mide solo en esos partidos.</p>';
     } else h += '<p class="sub">El modelo de mercado no está entrenado en esta actualización.</p>';
     h += '</div>';
+    /* mercados derivados de las cuotas */
+    var DV = D.derivados;
+    if (DV && DV.tabla && DV.tabla.length) {
+      h += '<div class="card"><h2>¿De dónde salen las probabilidades del informe?</h2><p class="sub">Las cuotas 1X2 y Más/Menos 2.5 del propio partido, sin margen, se convierten en goles esperados y de ahí salen los demás mercados. ' +
+        'Prueba: ' + (DV.test || []).map(nomTemp).join(" y ") + ' (' + DV.n + ' partidos). "Mejora" = cuánto reduce el error frente a decir siempre la frecuencia media; cuanto más alta, más predecible es el mercado.</p>' +
+        tabla(["Mercado", "Cuotas", "Rating", "Goles"], DV.tabla.map(function (f) {
+          var g = function (n) { return f.fuentes[n] ? signo(100 * f.fuentes[n].mejora, 1) : "—"; };
+          return [esc(f.mercado.replace(" goles", "").replace("Local o empate ", "").replace("Empate o visitante ", "")), "<b>" + g("Cuotas del partido") + " %</b>", g("Rating de mercado"), g("Modelo de goles")]; })) +
+        '<p class="sub">Cuotas = cuotas del partido · Rating = rating de mercado · Goles = modelo de goles. Mejora en %.</p>' +
+        '<p class="sub">Las cuotas del partido ganan en todos los mercados: por eso son la base del informe cuando existen. Ambos marcan apenas mejora a la media: es casi una moneda al aire, y ahí lo único que cuenta es la cuota.</p>';
+      var cb = DV.calibracion && DV.calibracion.btts;
+      if (cb && cb.length) h += '<h3>Cuando el informe dice X % de Ambos marcan, ¿pasa?</h3>' + tabla(["Tramo", "Partidos", "Dijo", "Pasó"],
+        cb.map(function (x) { return [x.tramo, x.n, pct(x.p), pct(x.y)]; }));
+      var c1 = DV.calibracion && DV.calibracion["1x"];
+      if (c1 && c1.length) h += '<h3>¿Y con Local o empate (1X)?</h3>' + tabla(["Tramo", "Partidos", "Dijo", "Pasó"],
+        c1.map(function (x) { return [x.tramo, x.n, pct(x.p), pct(x.y)]; }));
+      h += '</div>';
+    }
+    if (D.variables && D.variables.length) {
+      h += '<div class="card"><h2>¿Añaden algo la forma, el descanso o los tiros?</h2><p class="sub">Se añade cada grupo de variables a la probabilidad de las cuotas y se mide en la prueba si predice mejor. ' +
+        'Negativo = ayuda. "No se distingue" = el cambio cabe en el azar.</p>' +
+        tabla(["Mercado", "Variables", "Cambio", "Veredicto"], D.variables.map(function (r) {
+          return [esc(r.mercado.replace("Local o empate (1X)", "1X").replace(" goles", "")), '<span style="white-space:normal">' + esc(r.variables) + '</span>', signo(r.dif, 4), esc(r.veredicto)]; })) +
+        '<p class="sub">Conclusión: el mercado ya descuenta estas variables. Sirven para entender el partido y para detectar cuándo falta información (bajas), no para corregir la probabilidad.</p></div>';
+    }
     /* córners y tarjetas */
     var C = D.conteos || {};
     Object.keys(C).forEach(function (t) {
@@ -1183,11 +1423,11 @@ if (typeof module !== "undefined") module.exports = Motor;
       h += '<h3>Alternativa: usar directamente P(ambos marcan)</h3>' + tabla(["P(ambos) ≥", "Señales", "Acierto", "Cuota mín."],
         B.barrido_btts.map(function (x) { return [Math.round(100 * x.umbral) + " %", x.prueba.n, pct(x.prueba.acierto, 0) + ' <span class="sub">(' + pct(x.desarrollo.acierto, 0) + ')</span>',
           num(x.prueba.cuota_min)]; })) + '<p class="sub">Acierto en la prueba y, entre paréntesis, en las temporadas de desarrollo: si se parecen, el patrón es estable. Con pocas señales (menos de ~300) no te fíes.</p>' +
-        '<p class="sub">Subir el umbral da menos señales pero más acierto, y baja la cuota mínima. La regla que de verdad tiene sentido es: apuesta solo si la cuota que te dan supera la cuota justa del partido (📊 Variables te lo calcula).</p>';
+        '<p class="sub">Subir el umbral da menos señales pero más acierto, y baja la cuota mínima. La regla que de verdad tiene sentido es: apuesta solo si la cuota que te dan supera la cuota justa del partido (📋 Informe te lo calcula).</p>';
       if (B.calibracion && B.calibracion.length) h += '<h3>Calibración de P(ambos marcan)</h3>' + tabla(["Tramo", "N", "Modelo dijo", "Pasó"],
         B.calibracion.map(function (x) { return [x.tramo, x.n, pct(x.p_media), pct(x.frecuencia)]; })) +
         '<p class="sub">Si "Pasó" queda por encima de "Modelo dijo", el modelo se queda corto en ese tramo.</p>';
-      h += '<p class="sub">football-data no publica cuotas de Ambos marcan, así que el backtest no puede calcular beneficios: solo la cuota mínima. Para medir tu ROI real, registra cada apuesta con su cuota en 📊 Variables.</p></div>';
+      h += '<p class="sub">football-data no publica cuotas de Ambos marcan, así que el backtest no puede calcular beneficios: solo la cuota mínima. Para medir tu ROI real, registra cada apuesta con su cuota desde 📋 Informe.</p></div>';
     }
     h += '<div class="card"><h3>Datos</h3><p class="sub">Actualizado: ' + esc(D.generado) + '<br>Resultados hasta: ' + fechaCorta(D.datos_hasta) +
       '<br>Ligas: ' + D.ligas.map(function (l) { return esc(l.nombre); }).join(", ") + '</p>';
@@ -1213,7 +1453,8 @@ if (typeof module !== "undefined") module.exports = Motor;
   }
   Array.prototype.forEach.call(document.querySelectorAll("nav button"), function (b) { b.onclick = function () { ir(this.dataset.tab); }; });
   window.__app = { st: st, ir: ir, registrar: registrar, liquidar: liquidar, diario: diario, apuestas: apuestas,
-    liquidarApuestas: liquidarApuestas, datos: function () { return D; } };
+    liquidarApuestas: liquidarApuestas, boleto: boleto, guardarBoleto: guardarBoleto, alBoleto: alBoleto, caja: caja,
+    analisis: analisis, datos: function () { return D; } };
   /* pide al navegador que no borre el diario por falta de espacio (si lo permite) */
   try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist(); } catch (e) { /* sin soporte */ }
   cargar();
