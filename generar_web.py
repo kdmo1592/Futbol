@@ -299,8 +299,9 @@ def cuotas_btts(proximos, hoy, errores):
         return {}, None
     errores.extend(avisos)
     ca.guardar_estado(ESTADO_CUOTAS, estado_nuevo)
-    aviso(f"Ambos marcan: {resumen['partidos_con_cuota']} partidos con cuota · "
-          f"{resumen['consultas']} consultas · {resumen['creditos']} créditos · quedan {resumen['restantes']}")
+    aviso(f"Cuotas: {resumen['partidos_con_cuota']} partidos con Ambos marcan, "
+          f"{resumen.get('con_corners', 0)} con córners · {resumen['consultas']} consultas · "
+          f"{resumen['creditos']} créditos · quedan {resumen['restantes']}")
     return btts, resumen
 
 
@@ -389,6 +390,11 @@ def main(descargador=mf.descargar_csv, salida=SALIDA, hoy=None):
             conteos = es.evaluar_conteos(hist, dev[-2:], test)
             for k, c in conteos.items():
                 aviso(f"{c['nombre']}: dispersión total {c['k_total']}, por equipo {c['k_lado']}")
+            aj = es.ajuste_tarjetas(es.anadir_implicitas(modelo.variables, modelo.inv), hist, test)
+            if aj and "tarjetas" in conteos:
+                conteos["tarjetas"]["ajuste"] = aj
+                aviso(f"Ajuste de tarjetas por contexto: brier {aj['brier_sin']:.5f} -> {aj['brier_con']:.5f} "
+                      f"(IC {aj['ic_lo']:+.5f}, {aj['ic_hi']:+.5f}) · se usa: {aj['usar']}")
         except Exception as e:                          # noqa: BLE001
             errores.append(f"córners/tarjetas sin evaluar: {e}")
             traceback.print_exc()

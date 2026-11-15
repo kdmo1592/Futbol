@@ -37,9 +37,16 @@ Ligas: LaLiga, LaLiga 2, Premier League, Bundesliga, Serie A, Ligue 1 y Allsvens
   the-odds-api.com (plan gratuito, 500 consultas al mes; la clave está en el secreto `ODDSPAPI_KEY` del repositorio).
   La lista de partidos es gratis y cada partido cuesta una sola consulta, así que sobra presupuesto.
   Cuando hay precio real, el informe usa el consenso del mercado en vez del modelo y enseña la mejor cuota disponible.
-  Esa API no tiene córners ni tarjetas para estas ligas: esos siguen saliendo del modelo.
+  En LaLiga y Segunda también hay **cuotas reales de córners** (`alternate_totals_corners`); donde las hay, el
+  informe usa esas líneas y precios en vez del modelo. No existe mercado de tarjetas en ninguna liga.
 - Cada cuota recogida se archiva en `historico_btts.json` junto con el resultado del partido. Con el tiempo eso
   permite medir de verdad si apostar a Ambos marcan sale rentable (pestaña ✅ Fiable).
+- **Tarjetas**: se corrigen por el contexto del partido (un partido igualado tiene más tarjetas que uno con
+  favorito claro: ×1.06 frente a ×0.85). Es el único añadido que mejoró de verdad en las temporadas de prueba.
+  Probé también faltas, tiros y el árbitro: ninguno mejoró de forma medible, así que no están en el modelo
+  (el árbitro se sigue enseñando como contexto).
+- **Córners**: probé faltas, tiros y contexto del partido; ninguno mejora al modelo actual. Por eso lo que vale
+  de verdad son las cuotas reales donde existen.
 - Fuentes de xG gratuitas (Understat) no están disponibles de forma fiable; por eso no se usan.
 
 ## Archivos

@@ -40,8 +40,11 @@ for (const f of D.proximos) {
     if (a.fixture === f && b.n >= 2 && Math.abs(a.marca.pb - b.p) > 1e-6)
       fallos.push(`${nombre} · el informe no usa la cuota real de btts`);
   }
-  for (const c of Object.values(a.conteos || {}))
+  for (const c of Object.values(a.conteos || {})) {
     for (const l of c.total_lineas.concat(c.local_lineas, c.visit_lineas)) if (!ok(l[1])) fallos.push(`${nombre} · ${c.nombre} ${l}`);
+    if (c.ajuste && !(c.ajuste.factor > 0.5 && c.ajuste.factor < 2)) fallos.push(`${nombre} · ajuste de tarjetas raro: ${c.ajuste.factor}`);
+    if (c.mercado) for (const [l, m] of Object.entries(c.mercado)) if (!ok(m.p)) fallos.push(`${nombre} · córners de mercado ${l}: ${m.p}`);
+  }
 }
 console.log(`Partidos comprobados: ${n} de ${D.proximos.length}`);
 esperados.forEach((e) => console.log("  sin análisis (normal en recién ascendidos): " + e));
