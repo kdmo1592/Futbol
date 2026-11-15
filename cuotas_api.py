@@ -31,9 +31,9 @@ BASE = "https://api.the-odds-api.com/v4"
 REGIONES = "uk"                      # donde más casas publican Ambos marcan
 MERCADO = "btts"
 MERCADO_CORNERS = "alternate_totals_corners"
-# Solo algunas ligas tienen mercado de córners (comprobado: LaLiga sí, Premier y Serie A no).
-# Pedirlo donde no existe gasta crédito igual, así que se limita y se aprende sobre la marcha.
-LIGAS_CORNERS = {"SP1", "SP2"}
+# Medido: pedir córners donde ninguna casa los publica NO gasta crédito (solo se cobra el
+# mercado que llega con datos), así que se piden en todas las ligas. Si el presupuesto baja,
+# se dejan de pedir y se mantiene solo Ambos marcan.
 RESERVA_CORNERS = 220                # solo se piden córners si sobra presupuesto
 RESERVA = 60                         # nunca bajar de aquí: deja margen para el resto del mes
 MAX_POR_EJECUCION = 40               # tope de partidos nuevos por ejecución
@@ -162,7 +162,7 @@ def consenso_corners(corners):
                 ps.append((1 / o) / (1 / o + 1 / u))
                 mas.append((nombre, o))
                 menos.append((nombre, u))
-        if len(ps) < 2:
+        if not ps:
             continue
         mm, mn = max(mas, key=lambda x: x[1]), max(menos, key=lambda x: x[1])
         salida[linea] = {"p": round(sum(ps) / len(ps), 4), "n": len(ps),
@@ -230,9 +230,7 @@ def recoger(clave, proximos, estado, hoy, log=print):
     """
     cli = ClienteCuotas(clave, estado)
     salida, nuevo = {}, dict(estado or {})
-    memoria = nuevo.get("_ligas_corners") if isinstance(nuevo.get("_ligas_corners"), list) else None
-    ligas_corners = set(memoria) if memoria else set(LIGAS_CORNERS)
-    sin_corners = set()
+    con_corners_n = 0
     limite = _fecha(hoy)
     por_liga = {}
     for p in proximos:
@@ -259,8 +257,7 @@ def recoger(clave, proximos, estado, hoy, log=print):
                     continue
             if pedidos >= MAX_POR_EJECUCION or not cli.hay_presupuesto():
                 break
-            con_corners = (fx["liga"] in ligas_corners and cli.hay_presupuesto(2)
-                           and (cli.restantes is None or cli.restantes > RESERVA_CORNERS))
+            con_corners = cli.hay_presupuesto(2) and (cli.restantes is None or cli.restantes > RESERVA_CORNERS)
             casas, corners = cli.cuotas(liga_api, ev.get("id"), con_corners)
             pedidos += 1
             c = consenso(casas)
@@ -268,19 +265,16 @@ def recoger(clave, proximos, estado, hoy, log=print):
                 cc = consenso_corners(corners)
                 if cc:
                     c["corners"] = cc
-                    ligas_corners.add(fx["liga"])
-                elif con_corners:
-                    sin_corners.add(fx["liga"])
+                    con_corners_n += 1
                 c["actualizado"] = time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime())
                 salida[k] = c
                 nuevo[k] = {"ts": _ahora(), "cuotas": c}
     # limpieza: olvidar partidos de hace más de 60 días
     corte = _ahora() - 60 * 86400
     nuevo = {k: v for k, v in nuevo.items() if isinstance(v, dict) and v.get("ts", 0) > corte}
-    nuevo["_ligas_corners"] = sorted(ligas_corners - sin_corners)
     resumen = {"consultas": pedidos, "creditos": cli.usados, "restantes": cli.restantes,
                "partidos_con_cuota": len(salida),
-               "con_corners": sum(1 for c in salida.values() if c.get("corners"))}
+               "con_corners": sum(1 for c in salida.values() if c.get("corners")), "nuevos_corners": con_corners_n}
     return salida, nuevo, cli.avisos, resumen
 
 

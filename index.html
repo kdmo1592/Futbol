@@ -367,7 +367,7 @@ var Motor = (function () {
       if (c.mercado) {                       /* precio real: se usan las líneas que publica el mercado */
         Object.keys(c.mercado).map(Number).sort(function (x, y) { return x - y; }).forEach(function (l) {
           var m = c.mercado[String(l)];
-          if (!m || m.n < 2) return;
+          if (!m || !(m.n >= 1)) return;
           add(t[2], t[2], "Más de " + l, t[1], 1, l, m.p, m.mejor_mas && m.mejor_mas[1]);
           add(t[2], t[2], "Menos de " + l, t[1], 0, l, 1 - m.p, m.mejor_menos && m.mejor_menos[1]);
           out[out.length - 2].casa = m.mejor_mas && m.mejor_mas[0];
@@ -705,7 +705,11 @@ if (typeof module !== "undefined") module.exports = Motor;
       if (c.ajuste) h += '<p class="sub">Ajustado por el contexto: el rating a secas daba ' + num(c.ajuste.sin, 1) +
         ', pero ' + (c.ajuste.factor > 1 ? 'es un partido igualado y eso sube las tarjetas' : 'hay un favorito claro y eso las baja') +
         ' (×' + num(c.ajuste.factor) + ').</p>';
-      if (c.mercado) h += '<p class="sub">✅ Este partido tiene <b>cuotas reales de córners</b>: las probabilidades de abajo salen del mercado, no del modelo.</p>';
+      if (c.mercado) {
+        var nc = Math.max.apply(null, Object.keys(c.mercado).map(function (x) { return c.mercado[x].n; }));
+        h += '<p class="sub">✅ Este partido tiene <b>cuotas reales de córners</b>: las probabilidades de abajo salen del mercado, no del modelo' +
+          (nc < 2 ? ', aunque solo las publica una casa, así que llevan su margen dentro' : '') + '.</p>';
+      }
       if (t === "tarjetas") h += infoArbitro(a);
       var filas = c.mercado
         ? Object.keys(c.mercado).map(Number).sort(function (x, y) { return x - y; }).map(function (l) {
