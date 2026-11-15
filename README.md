@@ -33,6 +33,13 @@ Ligas: LaLiga, LaLiga 2, Premier League, Bundesliga, Serie A, Ligue 1 y Allsvens
 - "Pide ≥" es la cuota justa más un margen de seguridad (mayor en los mercados menos predecibles). Por debajo, no hay valor.
 - La forma, el descanso y los tiros a puerta se muestran como contexto: el robot comprueba cada día si mejoran la
   predicción y, hasta ahora, no lo hacen. Lo que el mercado puede no haber recogido aún son las noticias: bajas y alineaciones.
+- **Ambos marcan tiene precio real**: football-data no publica ese mercado, así que el robot lo pide a
+  the-odds-api.com (plan gratuito, 500 consultas al mes; la clave está en el secreto `ODDSPAPI_KEY` del repositorio).
+  La lista de partidos es gratis y cada partido cuesta una sola consulta, así que sobra presupuesto.
+  Cuando hay precio real, el informe usa el consenso del mercado en vez del modelo y enseña la mejor cuota disponible.
+  Esa API no tiene córners ni tarjetas para estas ligas: esos siguen saliendo del modelo.
+- Cada cuota recogida se archiva en `historico_btts.json` junto con el resultado del partido. Con el tiempo eso
+  permite medir de verdad si apostar a Ambos marcan sale rentable (pestaña ✅ Fiable).
 - Fuentes de xG gratuitas (Understat) no están disponibles de forma fiable; por eso no se usan.
 
 ## Archivos
@@ -44,8 +51,11 @@ Ligas: LaLiga, LaLiga 2, Premier League, Bundesliga, Serie A, Ligue 1 y Allsvens
 | `motor_futbol.py` | Descarga de datos y modelo de goles (Poisson + Dixon-Coles) |
 | `modelo_mercado.py` | Rating de mercado y modelo de mercado; mide todo en temporadas de prueba |
 | `estrategias.py` | Córners, tarjetas y backtest de Ambos marcan |
+| `cuotas_api.py` | Cuotas reales de Ambos marcan (the-odds-api.com) y emparejado de nombres de equipos |
 | `comprobar.js` | Prueba la app con los datos nuevos antes de publicarlos |
 | `data.json` | Datos que lee la app (lo genera el robot; no tocar) |
+| `cuotas_btts.json` | Cuotas ya pedidas, para no pagarlas dos veces (lo genera el robot) |
+| `historico_btts.json` | Cuotas de Ambos marcan con su resultado, para medir la regla (lo genera el robot) |
 
 ## Cómo se mide (para no engañarse)
 

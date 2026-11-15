@@ -33,6 +33,13 @@ for (const f of D.proximos) {
   const pc = Motor.probCombinada(S.filter((x) => x.tipo === "DO" && x.lado === 0 || x.tipo === "BTTS" && x.lado === 1)
     .map((x) => Object.assign({ partido: nombre, lam: a.base.lam, rho: a.base.rho }, x)));
   if (!ok(pc)) fallos.push(`${nombre} · combinada: ${pc}`);
+  if (f.btts) {
+    const b = f.btts;
+    if (!ok(b.p) || !(b.n > 0)) fallos.push(`${nombre} · cuotas btts: p=${b.p} n=${b.n}`);
+    if (!(b.mejor_si && b.mejor_si[1] > 1) || !(b.mejor_no && b.mejor_no[1] > 1)) fallos.push(`${nombre} · btts sin mejor precio`);
+    if (a.fixture === f && b.n >= 2 && Math.abs(a.marca.pb - b.p) > 1e-6)
+      fallos.push(`${nombre} · el informe no usa la cuota real de btts`);
+  }
   for (const c of Object.values(a.conteos || {}))
     for (const l of c.total_lineas.concat(c.local_lineas, c.visit_lineas)) if (!ok(l[1])) fallos.push(`${nombre} · ${c.nombre} ${l}`);
 }

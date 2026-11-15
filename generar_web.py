@@ -14,11 +14,14 @@ Qué hace:
   4. Mide cada modelo en temporadas que no ha visto (pestaña Fiable), hace el backtest
      de la regla de "Ambos marcan", mide los mercados derivados de las cuotas del propio
      partido y comprueba si la forma, el descanso o los tiros añaden algo.
-  5. Escribe data.json, que es lo que lee la app (index.html).
+  5. Pide a The Odds API las cuotas de Ambos marcan que football-data no tiene
+     (solo si hay clave: secreto ODDSPAPI_KEY) y las archiva con su resultado.
+  6. Escribe data.json, que es lo que lee la app (index.html).
 """
 
 import io
 import json
+import os
 import sys
 import time
 import traceback
@@ -28,6 +31,7 @@ import numpy as np
 import pandas as pd
 import requests
 
+import cuotas_api as ca
 import estrategias as es
 import modelo_mercado as mm
 import motor_futbol as mf
@@ -49,6 +53,9 @@ URL_EXTRA = "https://www.football-data.co.uk/new/{cod}.csv"
 URL_FIXTURES_EXTRA = "https://www.football-data.co.uk/new_league_fixtures.csv"
 
 SALIDA = Path(__file__).resolve().parent / "data.json"
+AQUI = Path(__file__).resolve().parent
+ESTADO_CUOTAS = AQUI / "cuotas_btts.json"              # cuotas ya pedidas (para no pagarlas dos veces)
+HISTORICO_BTTS = AQUI / "historico_btts.json"          # cuotas + resultado, para medir la regla de verdad
 
 
 def aviso(msg):
@@ -166,7 +173,8 @@ def primeras_cuotas(salida):
         return {}
 
 
-def exportar(hist, fx, modelo, errores, hoy, conteos=None, btts=None, derivados=None, variables=None, previas=None):
+def exportar(hist, fx, modelo, errores, hoy, conteos=None, btts=None, derivados=None, variables=None,
+             previas=None, btts_cuotas=None, btts_hist=None):
     hoy_d = int(np.datetime64(hoy.to_datetime64(), "D").astype(np.int64))
     ligas, fuerzas, ultimo = [], {}, {}
     for cod in mf.LIGAS:
@@ -235,6 +243,10 @@ def exportar(hist, fx, modelo, errores, hoy, conteos=None, btts=None, derivados=
             ini = (previas or {}).get((r["liga"], r["local_n"], r["visitante_n"]))
             if ini and ini[0] and proximos[-1]["mer1x2"]:
                 proximos[-1]["mer_ini"], proximos[-1]["mer_ini_fecha"] = ini[0], ini[1]
+            cb = (btts_cuotas or {}).get(ca.clave_partido(r["liga"], f"{r['fecha']:%Y-%m-%d}",
+                                                          r["local_n"], r["visitante_n"]))
+            if cb:
+                proximos[-1]["btts"] = cb
 
     mod = None
     if modelo is not None and modelo.modelos:
@@ -255,6 +267,7 @@ def exportar(hist, fx, modelo, errores, hoy, conteos=None, btts=None, derivados=
             "ligas": ligas, "fuerzas": fuerzas, "ultimo_partido": ultimo, "modelo": mod,
             "conteos": limpiar(conteos), "estrategias": {"btts": limpiar(btts)}, "arbitros": arbitros,
             "derivados": limpiar(derivados), "variables": limpiar(variables),
+            "btts_real": limpiar(btts_hist),
             "partidos": partidos, "proximos": proximos, "avisos": errores}
 
 
@@ -269,6 +282,87 @@ def limpiar(x):
     if isinstance(x, (float, np.floating)):
         return _num(x, 4)
     return x
+
+
+def cuotas_btts(proximos, hoy, errores):
+    """Cuotas reales de Ambos marcan. Sin clave, no hace nada (la app sigue igual)."""
+    clave = os.environ.get("ODDSPAPI_KEY") or os.environ.get("ODDS_API_KEY") or ""
+    if not clave.strip():
+        aviso("Sin clave de cuotas: Ambos marcan se queda sin precios de mercado.")
+        return {}, None
+    estado = ca.cargar_estado(ESTADO_CUOTAS)
+    try:
+        btts, estado_nuevo, avisos, resumen = ca.recoger(clave.strip(), proximos, estado, f"{hoy:%Y-%m-%d}", aviso)
+    except Exception as e:                              # noqa: BLE001
+        errores.append(f"cuotas de Ambos marcan no disponibles: {e}")
+        traceback.print_exc()
+        return {}, None
+    errores.extend(avisos)
+    ca.guardar_estado(ESTADO_CUOTAS, estado_nuevo)
+    aviso(f"Ambos marcan: {resumen['partidos_con_cuota']} partidos con cuota · "
+          f"{resumen['consultas']} consultas · {resumen['creditos']} créditos · quedan {resumen['restantes']}")
+    return btts, resumen
+
+
+def archivar_btts(hist, errores):
+    """Guarda cuota + resultado de los partidos ya jugados: con el tiempo permite medir la regla."""
+    try:
+        estado = ca.cargar_estado(ESTADO_CUOTAS)
+        try:
+            historico = json.loads(HISTORICO_BTTS.read_text(encoding="utf-8"))
+        except Exception:                               # noqa: BLE001
+            historico = []
+        ya = {(r["liga"], r["fecha"], r["local"], r["visitante"]) for r in historico}
+        jug = {(r.liga, f"{r.fecha:%Y-%m-%d}", r.local_n, r.visitante_n): (int(r.gl), int(r.gv))
+               for r in hist.itertuples()}
+        n = 0
+        for k, v in estado.items():
+            try:
+                liga, fecha, local, visitante = k.split("|", 3)
+            except ValueError:
+                continue
+            if (liga, fecha, local, visitante) in ya:
+                continue
+            res = None
+            for dia in (fecha, _mas_dias(fecha, 1), _mas_dias(fecha, -1)):
+                res = jug.get((liga, dia, local, visitante))
+                if res:
+                    break
+            c = v.get("cuotas") or {}
+            if not res or not c.get("p"):
+                continue
+            historico.append({"liga": liga, "fecha": fecha, "local": local, "visitante": visitante,
+                              "p": c["p"], "n_casas": c.get("n"), "mejor_si": c.get("mejor_si"),
+                              "mejor_no": c.get("mejor_no"), "gl": res[0], "gv": res[1],
+                              "ambos": int(res[0] > 0 and res[1] > 0)})
+            n += 1
+        historico.sort(key=lambda r: (r["fecha"], r["liga"]))
+        HISTORICO_BTTS.write_text(json.dumps(historico, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+        aviso(f"Histórico de Ambos marcan: {len(historico)} partidos con cuota y resultado (+{n})")
+        return historico
+    except Exception as e:                              # noqa: BLE001
+        errores.append(f"histórico de Ambos marcan: {e}")
+        traceback.print_exc()
+        return []
+
+
+def _mas_dias(fecha, d):
+    return f"{pd.Timestamp(fecha) + pd.Timedelta(days=d):%Y-%m-%d}"
+
+
+def resumen_historico(historico):
+    """Con cuota real: acierto, ROI de apostar 'Sí' siempre y calidad de la estimación."""
+    if len(historico) < 20:
+        return {"n": len(historico), "suficiente": False}
+    n = len(historico)
+    ambos = sum(r["ambos"] for r in historico)
+    ben = sum((r["mejor_si"][1] - 1) if r["ambos"] else -1 for r in historico if r.get("mejor_si"))
+    con_cuota = [r for r in historico if r.get("mejor_si")]
+    return {"n": n, "suficiente": True, "frecuencia": round(ambos / n, 4),
+            "p_media": round(sum(r["p"] for r in historico) / n, 4),
+            "cuota_media": round(sum(r["mejor_si"][1] for r in con_cuota) / max(len(con_cuota), 1), 3),
+            "roi_si": round(ben / max(len(con_cuota), 1), 4), "n_cuota": len(con_cuota),
+            "desde": historico[0]["fecha"], "hasta": historico[-1]["fecha"]}
 
 
 def main(descargador=mf.descargar_csv, salida=SALIDA, hoy=None):
@@ -313,7 +407,11 @@ def main(descargador=mf.descargar_csv, salida=SALIDA, hoy=None):
         except Exception as e:                          # noqa: BLE001
             errores.append(f"mercados derivados sin evaluar: {e}")
             traceback.print_exc()
-    datos = exportar(hist, fx, modelo, errores, hoy, conteos, btts, derivados, variables, primeras_cuotas(salida))
+    previas = primeras_cuotas(salida)
+    datos_prev = exportar(hist, fx, modelo, errores, hoy, conteos, btts, derivados, variables, previas)
+    cuotas, _res = cuotas_btts(datos_prev["proximos"], hoy, errores)
+    btts_hist = resumen_historico(archivar_btts(hist, errores))
+    datos = exportar(hist, fx, modelo, errores, hoy, conteos, btts, derivados, variables, previas, cuotas, btts_hist)
     Path(salida).write_text(json.dumps(datos, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
     aviso(f"Escrito {salida} ({Path(salida).stat().st_size / 1024:.0f} KB) en {time.time() - t0:.0f} s")
     return datos

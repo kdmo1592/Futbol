@@ -24,12 +24,14 @@ jobs:
           node-version: "20"
       - run: pip install -r requirements.txt
       - run: python generar_web.py
+        env:
+          ODDSPAPI_KEY: ${{ secrets.ODDSPAPI_KEY }}
       - name: Comprobar que la app funciona con los datos nuevos
         run: node comprobar.js
       - name: Guardar data.json
         run: |
           git config user.name "robot-futbol"
           git config user.email "robot-futbol@users.noreply.github.com"
-          git add data.json
+          git add -A data.json cuotas_btts.json historico_btts.json || git add data.json
           git diff --cached --quiet || git commit -m "Datos actualizados $(date -u +%Y-%m-%d)"
           git push
